@@ -5,10 +5,10 @@ namespace Papercut
 {
     public enum OutlineKind
     {
-        /// <summary>A sheet edge, or the mirror image of one on the landed Flap: walkable ground ends here, and if a neighbour with room lies beyond, it is an exit.</summary>
+        /// <summary>A sheet edge, or the mirror image of one lying on it: walkable ground ends at the sheet's border here, and if a neighbour with room lies beyond, it is an exit.</summary>
         SheetEdge,
-        /// <summary>The crease: beyond it the sheet is lifted. Always a wall.</summary>
-        Crease,
+        /// <summary>The sheet ends here inside its own rect: a crease (beyond it the sheet is lifted) or the edge of a landed piece lying over empty desk. Always a wall.</summary>
+        Wall,
     }
 
     /// <summary>One boundary segment of the walkable area, sheet-local.</summary>
@@ -38,50 +38,56 @@ namespace Papercut
     }
 
     /// <summary>
-    /// The boundary of the ground the player can stand on. Sheet-local, pure.
+    /// The boundary of the ground the player can stand on: the outline of the union of every layer of the
+    /// sheet where it lies (<see cref="SheetLayers.Footprint"/>). Sheet-local, pure.
     /// </summary>
     /// <remarks>
-    /// With one fold the walkable area is the Base plus the landed Flap:
-    /// <c>(sheet ∪ reflect(sheet)) ∩ H−</c>, where <c>reflect(sheet)</c> is an axis-aligned rect (every legal
-    /// crease is at 0°, 90° or ±45°) and <c>H−</c> is the non-Flap side of the crease. Its boundary is the
-    /// boundary of the two-rect union clipped to H−, plus the crease where it runs through the union.
-    /// Exits are not authored: every <see cref="OutlineKind.SheetEdge"/> segment is an exit candidate toward
-    /// the direction it faces, and a wall of last resort. With more than one fold the union would be of
-    /// n + 1 rects clipped by n half-planes; only <see cref="AddRectEdges"/> would need generalising.
+    /// Every edge of every layer polygon, minus the open interiors of all the other polygons and minus any
+    /// stretch where another polygon has the same edge facing the other way (the sheet continues across it), is
+    /// boundary. A boundary piece on the sheet rect's border is a <see cref="OutlineKind.SheetEdge"/> toward
+    /// that side — an exit candidate, and a wall of last resort; everything else is a <see cref="OutlineKind.Wall"/>.
+    /// Exits are not authored (Bible §7). The outline can have concave corners once folds stack; see
+    /// <see cref="IsConvexAt"/>.
     /// </remarks>
     public static class WalkableOutline
     {
-        public static List<OutlineSegment> Segments(IReadOnlyList<Fold> folds)
+        const float Tolerance = 1e-4f;
+
+        public static List<OutlineSegment> Segments(IReadOnlyList<ConvexPolygon> layers)
         {
-            var sheet = FoldGeometry.Sheet;
             var result = new List<OutlineSegment>();
-
-            if (folds.Count == 0)
+            for (int i = 0; i < layers.Count; i++)
             {
-                AddRectEdges(result, sheet, null, null);
-                return Merge(result);
+                var polygon = layers[i];
+                for (int e = 0; e < polygon.Count; e++)
+                {
+                    var a = polygon.Vertices[e];
+                    var b = polygon.Vertices[(e + 1) % polygon.Count];
+                    if (Vector2.Distance(a, b) <= Tolerance)
+                        continue;
+                    var outward = polygon.OutwardNormal(e);
+                    var pieces = new List<(Vector2 a, Vector2 b)> { (a, b) };
+                    for (int j = 0; j < layers.Count && pieces.Count > 0; j++)
+                    {
+                        if (j == i)
+                            continue;
+                        var remaining = new List<(Vector2 a, Vector2 b)>();
+                        foreach (var (p, q) in pieces)
+                        {
+                            foreach (var piece in ConvexPolygon.SubtractFromSegment(p, q, layers[j]))
+                                remaining.AddRange(SubtractOppositeEdges(piece.a, piece.b, outward, layers[j]));
+                        }
+                        pieces = remaining;
+                    }
+                    foreach (var (p, q) in pieces)
+                    {
+                        if (Vector2.Distance(p, q) <= Tolerance)
+                            continue;
+                        var kind = TryEdgeDirection(p, q, outward, out var direction) ? OutlineKind.SheetEdge : OutlineKind.Wall;
+                        result.Add(new OutlineSegment(p, q, kind, outward, direction));
+                    }
+                }
             }
-
-            if (folds.Count > 1)
-                Debug.LogError("WalkableOutline supports one fold; using the first.");
-
-            var fold = folds[0];
-            var crease = FoldGeometry.CreaseOf(fold);
-            var mirrored = FoldGeometry.ReflectedSheet(fold);
-
-            AddRectEdges(result, sheet, mirrored, crease);
-            AddRectEdges(result, mirrored, sheet, crease);
-
-            // The crease is a wall wherever it crosses the union of the two rects.
-            var intervals = new List<(float, float)>(2);
-            if (FoldGeometry.TryClipLineToRect(crease, sheet, out var a1, out var b1))
-                intervals.Add(Param(crease, a1, b1));
-            if (FoldGeometry.TryClipLineToRect(crease, mirrored, out var a2, out var b2))
-                intervals.Add(Param(crease, a2, b2));
-            foreach (var (t0, t1) in MergeIntervals(intervals))
-                result.Add(new OutlineSegment(crease.Point + crease.Direction * t0, crease.Point + crease.Direction * t1,
-                    OutlineKind.Crease, crease.FlapNormal, default));
-
             return Merge(result);
         }
 
@@ -107,104 +113,66 @@ namespace Papercut
         }
 
         /// <summary>
-        /// The four edges of <paramref name="rect"/> minus the interior of <paramref name="other"/>, clipped to
-        /// the non-Flap side of <paramref name="crease"/>. Both rects are axis-aligned, so each edge faces its own
-        /// side whichever sheet edge it is the mirror image of.
+        /// Segment a–b minus every stretch where <paramref name="other"/> has a collinear edge facing the opposite
+        /// way: the sheet continues on both sides there, so it is not boundary.
         /// </summary>
-        static void AddRectEdges(List<OutlineSegment> result, Rect rect, Rect? other, Crease? crease)
+        static List<(Vector2 a, Vector2 b)> SubtractOppositeEdges(Vector2 a, Vector2 b, Vector2 outward, ConvexPolygon other)
         {
-            foreach (var direction in new[] { GridDirection.North, GridDirection.East, GridDirection.South, GridDirection.West })
+            var pieces = new List<(Vector2 a, Vector2 b)> { (a, b) };
+            var dir = (b - a).normalized;
+            for (int e = 0; e < other.Count && pieces.Count > 0; e++)
             {
-                var facing = direction;
-                var outward = facing.ToVector();
-                Vector2 a, b;
-                switch (direction)
+                if (Vector2.Distance(other.OutwardNormal(e), -outward) > Tolerance)
+                    continue;
+                var c = other.Vertices[e];
+                var d = other.Vertices[(e + 1) % other.Count];
+                if (Off(a, dir, c) > Tolerance || Off(a, dir, d) > Tolerance)
+                    continue;
+                var lo = Mathf.Min(Vector2.Dot(c - a, dir), Vector2.Dot(d - a, dir));
+                var hi = Mathf.Max(Vector2.Dot(c - a, dir), Vector2.Dot(d - a, dir));
+                var remaining = new List<(Vector2 a, Vector2 b)>();
+                foreach (var (p, q) in pieces)
                 {
-                    case GridDirection.North: a = new Vector2(rect.xMin, rect.yMax); b = new Vector2(rect.xMax, rect.yMax); break;
-                    case GridDirection.South: a = new Vector2(rect.xMin, rect.yMin); b = new Vector2(rect.xMax, rect.yMin); break;
-                    case GridDirection.East: a = new Vector2(rect.xMax, rect.yMin); b = new Vector2(rect.xMax, rect.yMax); break;
-                    default: a = new Vector2(rect.xMin, rect.yMin); b = new Vector2(rect.xMin, rect.yMax); break;
-                }
-
-                foreach (var (p, q) in other.HasValue ? SubtractOpenRect(a, b, other.Value) : new List<(Vector2, Vector2)> { (a, b) })
-                {
-                    var s = p;
-                    var e = q;
-                    if (crease.HasValue && !TryClipToNonFlapSide(p, q, crease.Value, out s, out e))
+                    var s0 = Vector2.Dot(p - a, dir);
+                    var s1 = Vector2.Dot(q - a, dir);
+                    if (hi <= s0 + Tolerance || lo >= s1 - Tolerance)
+                    {
+                        remaining.Add((p, q));
                         continue;
-                    if (Vector2.Distance(s, e) > 1e-5f)
-                        result.Add(new OutlineSegment(s, e, OutlineKind.SheetEdge, outward, facing));
+                    }
+                    if (lo > s0 + Tolerance)
+                        remaining.Add((p, a + dir * lo));
+                    if (hi < s1 - Tolerance)
+                        remaining.Add((a + dir * hi, q));
                 }
+                pieces = remaining;
             }
-        }
-
-        /// <summary>An axis-aligned segment minus the open interior of <paramref name="rect"/> (≤ 2 pieces).</summary>
-        static List<(Vector2, Vector2)> SubtractOpenRect(Vector2 a, Vector2 b, Rect rect)
-        {
-            var pieces = new List<(Vector2, Vector2)>(2);
-            var horizontal = Mathf.Approximately(a.y, b.y);
-            var fixedCoord = horizontal ? a.y : a.x;
-            var (fixedMin, fixedMax) = horizontal ? (rect.yMin, rect.yMax) : (rect.xMin, rect.xMax);
-            if (fixedCoord <= fixedMin + 1e-6f || fixedCoord >= fixedMax - 1e-6f)
-            {
-                pieces.Add((a, b));
-                return pieces;
-            }
-
-            var (lo, hi) = horizontal ? (rect.xMin, rect.xMax) : (rect.yMin, rect.yMax);
-            var sa = horizontal ? a.x : a.y;
-            var sb = horizontal ? b.x : b.y;
-            var sMin = Mathf.Min(sa, sb);
-            var sMax = Mathf.Max(sa, sb);
-            Vector2 At(float s) => horizontal ? new Vector2(s, fixedCoord) : new Vector2(fixedCoord, s);
-
-            if (lo > sMin + 1e-6f)
-                pieces.Add((At(sMin), At(Mathf.Min(lo, sMax))));
-            if (hi < sMax - 1e-6f)
-                pieces.Add((At(Mathf.Max(hi, sMin)), At(sMax)));
             return pieces;
         }
 
-        static bool TryClipToNonFlapSide(Vector2 a, Vector2 b, Crease crease, out Vector2 p, out Vector2 q)
-        {
-            const float onLine = 1e-6f;
-            var da = crease.SignedDistance(a);
-            var db = crease.SignedDistance(b);
-            p = a;
-            q = b;
-            var aOut = da > onLine;
-            var bOut = db > onLine;
-            if (aOut && bOut)
-                return false;
-            if (aOut)
-                p = a + (b - a) * (da / (da - db));
-            else if (bOut)
-                q = a + (b - a) * (da / (da - db));
-            return Vector2.Distance(p, q) > 1e-5f;
-        }
+        static float Off(Vector2 origin, Vector2 dir, Vector2 p) => Mathf.Abs(Vector2.Dot(p - origin, new Vector2(-dir.y, dir.x)));
 
-        static (float, float) Param(Crease c, Vector2 a, Vector2 b)
+        /// <summary>True if the segment lies on the sheet rect's border facing out; gives the side it lies on.</summary>
+        static bool TryEdgeDirection(Vector2 a, Vector2 b, Vector2 outward, out GridDirection direction)
         {
-            var ta = Vector2.Dot(a - c.Point, c.Direction);
-            var tb = Vector2.Dot(b - c.Point, c.Direction);
-            return (Mathf.Min(ta, tb), Mathf.Max(ta, tb));
-        }
-
-        static List<(float, float)> MergeIntervals(List<(float, float)> intervals)
-        {
-            intervals.Sort((x, y) => x.Item1.CompareTo(y.Item1));
-            var merged = new List<(float, float)>();
-            foreach (var (lo, hi) in intervals)
+            var half = SheetGeometry.HalfSize;
+            foreach (var candidate in new[] { GridDirection.North, GridDirection.East, GridDirection.South, GridDirection.West })
             {
-                if (merged.Count > 0 && lo <= merged[^1].Item2 + 1e-5f)
-                    merged[^1] = (merged[^1].Item1, Mathf.Max(merged[^1].Item2, hi));
-                else
-                    merged.Add((lo, hi));
+                var n = candidate.ToVector();
+                if (Vector2.Distance(n, outward) > Tolerance)
+                    continue;
+                var extent = Mathf.Abs(Vector2.Dot(half, n));
+                if (Mathf.Abs(Vector2.Dot(a, n) - extent) <= Tolerance && Mathf.Abs(Vector2.Dot(b, n) - extent) <= Tolerance)
+                {
+                    direction = candidate;
+                    return true;
+                }
             }
-            return merged;
+            direction = default;
+            return false;
         }
 
-        /// <summary>Joins collinear overlapping or touching segments of the same kind and direction (coincident edges of the two rects).</summary>
+        /// <summary>Joins collinear overlapping or touching segments of the same kind and direction (coincident edges of stacked or adjacent pieces).</summary>
         static List<OutlineSegment> Merge(List<OutlineSegment> segments)
         {
             var result = new List<OutlineSegment>(segments.Count);
@@ -244,11 +212,10 @@ namespace Papercut
 
         static bool Collinear(OutlineSegment x, OutlineSegment y)
         {
-            if (x.Kind != y.Kind || x.Direction != y.Direction || Vector2.Distance(x.Outward, y.Outward) > 1e-4f)
+            if (x.Kind != y.Kind || x.Direction != y.Direction || Vector2.Distance(x.Outward, y.Outward) > Tolerance)
                 return false;
             var dir = (x.B - x.A).normalized;
-            float Off(Vector2 p) => Mathf.Abs(Vector2.Dot(p - x.A, new Vector2(-dir.y, dir.x)));
-            return Off(y.A) < 1e-4f && Off(y.B) < 1e-4f;
+            return Off(x.A, dir, y.A) < Tolerance && Off(x.A, dir, y.B) < Tolerance;
         }
     }
 }

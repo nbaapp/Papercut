@@ -4,8 +4,8 @@ using UnityEngine;
 namespace Papercut
 {
     /// <summary>
-    /// How much of an object a fold affects. For Front content "Covered" means hidden under the Flap (or
-    /// lifted with it); for Back content it means exposed on the landed Flap.
+    /// How much of an object folding affects. For Front content "Covered" means hidden (nothing of it is on a
+    /// visible Front-up piece of the sheet); for Back content it means fully exposed on Back-up pieces.
     /// </summary>
     public enum FoldCoverage
     {
@@ -16,8 +16,9 @@ namespace Papercut
 
     /// <summary>
     /// What <see cref="SheetOcclusion"/> tells an <see cref="IFoldOccludee"/>: the coverage, and the parts of
-    /// its footprint that still exist in the world (face-local space) — the whole footprint, nothing, or the
-    /// clipped remainder(s). An occludee acts on <see cref="VisibleParts"/>; <see cref="Coverage"/> is context.
+    /// its footprint that exist in the world — the whole footprint where it was authored, nothing, or the
+    /// pieces that lie on visible layers of the sheet, each placed where that layer lies now. Parts are in
+    /// sheet-local space. An occludee acts on <see cref="VisibleParts"/>; <see cref="Coverage"/> is context.
     /// </summary>
     public readonly struct CoverageResult
     {
@@ -25,10 +26,10 @@ namespace Papercut
 
         public FoldCoverage Coverage { get; }
 
-        /// <summary>Face-local convex pieces of the footprint that are present in the world. Empty when none is.</summary>
+        /// <summary>Sheet-local convex pieces of the footprint that are present in the world, where they are. Empty when none is.</summary>
         public IReadOnlyList<ConvexPolygon> VisibleParts { get; }
 
-        /// <summary>True when the entire footprint is present (the collider needs no clipping).</summary>
+        /// <summary>True when the entire footprint is present where it was authored (the collider needs no clipping).</summary>
         public bool IsWhole { get; }
 
         CoverageResult(FoldCoverage coverage, IReadOnlyList<ConvexPolygon> visibleParts, bool isWhole)
@@ -40,14 +41,15 @@ namespace Papercut
 
         public bool IsNone => VisibleParts.Count == 0;
 
-        /// <summary>The whole footprint is present.</summary>
+        /// <summary>The whole footprint is present, unmoved (Front content on the Base).</summary>
         public static CoverageResult Whole(FoldCoverage coverage, Rect footprint)
             => new(coverage, new[] { ConvexPolygon.FromRect(footprint) }, true);
 
         /// <summary>Nothing of the footprint is present.</summary>
         public static CoverageResult None(FoldCoverage coverage) => new(coverage, NoParts, false);
 
-        /// <summary>Only <paramref name="parts"/> of the footprint are present.</summary>
-        public static CoverageResult Clipped(IReadOnlyList<ConvexPolygon> parts) => new(FoldCoverage.Partial, parts, false);
+        /// <summary>Only <paramref name="parts"/> of the footprint are present, where they are.</summary>
+        public static CoverageResult Clipped(IReadOnlyList<ConvexPolygon> parts, FoldCoverage coverage = FoldCoverage.Partial)
+            => new(coverage, parts, false);
     }
 }

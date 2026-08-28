@@ -15,6 +15,8 @@ GameObject:
   - component: {fileID: 1005}
   - component: {fileID: 1006}
   - component: {fileID: 1007}
+  - component: {fileID: 1008}
+  - component: {fileID: 1009}
   m_Layer: 0
   m_Name: Player
   m_TagString: Player
@@ -166,6 +168,32 @@ MonoBehaviour:
   run: {fileID: 11400000, guid: 8aacb55578884382b663af616e74fbbb, type: 2}
   runInputThreshold: 0
   mirrorToFaceLeft: 1
+--- !u!114 &1008
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1000}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0b1e2d3c4a5f6e7d8c9b0a1f2e3d4c58, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
+  pushInputThreshold: 0.3
+  pushFaceAxisFraction: 0.9
+--- !u!114 &1009
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1000}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0b1e2d3c4a5f6e7d8c9b0a1f2e3d4c5a, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
 --- !u!1 &2000
 GameObject:
   m_ObjectHideFlags: 0

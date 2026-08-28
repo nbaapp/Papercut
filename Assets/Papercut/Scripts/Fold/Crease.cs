@@ -28,8 +28,5 @@ namespace Papercut
 
         /// <summary>Mirror image of <paramref name="p"/> across the crease.</summary>
         public Vector2 Reflect(Vector2 p) => p - 2f * SignedDistance(p) * FlapNormal;
-
-        /// <summary>Angle of <see cref="Direction"/> in degrees, counter-clockwise from +x.</summary>
-        public float AngleDegrees => Mathf.Atan2(Direction.y, Direction.x) * Mathf.Rad2Deg;
     }
 }

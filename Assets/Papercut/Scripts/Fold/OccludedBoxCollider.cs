@@ -30,7 +30,7 @@ namespace Papercut
             }
         }
 
-        public void Apply(in CoverageResult coverage, Transform faceRoot)
+        public void Apply(in CoverageResult coverage, Transform space)
         {
             if (coverage.IsNone)
             {
@@ -55,7 +55,7 @@ namespace Papercut
             }
             polygon.isTrigger = box.isTrigger;
             polygon.pathCount = coverage.VisibleParts.Count;
-            var toLocal = box.transform.worldToLocalMatrix * faceRoot.localToWorldMatrix;
+            var toLocal = box.transform.worldToLocalMatrix * space.localToWorldMatrix; // parts are in `space` (sheet-local): where each piece physically lies
             for (int i = 0; i < coverage.VisibleParts.Count; i++)
             {
                 var verts = coverage.VisibleParts[i].Vertices;

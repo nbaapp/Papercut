@@ -14,8 +14,8 @@ namespace Papercut
     /// <see cref="Back"/>. Each authored sheet is a prefab variant of the Sheet prefab (Assets/Papercut/Sheets),
     /// built in isolation and placed on the Desk by parenting it and setting <see cref="GridPosition"/>.
     /// Face content is put on the <see cref="FoldLayers"/> layers at Awake and is visible only through the sheet's
-    /// <see cref="IFoldRenderer"/>. Both face roots stay active; what exists physically is decided by
-    /// <see cref="SheetOcclusion"/>, and the Back root is posed by it when folded.
+    /// <see cref="IFoldRenderer"/>. Both face roots stay active and never move; what exists physically, and
+    /// where, is decided by <see cref="SheetOcclusion"/> from the sheet's fold layers.
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class Sheet : MonoBehaviour
@@ -27,7 +27,7 @@ namespace Papercut
         Transform front;
 
         [SerializeField, Tooltip("Root for everything authored on the Back face, in Back-space: point (x, y) here lies " +
-            "beneath Front point (-x, y) - the sheet turned over about its vertical edge. Posed at runtime by the fold system.")]
+            "beneath Front point (-x, y) - the sheet turned over about its vertical edge. Never moved at runtime.")]
         Transform back;
 
         Desk desk;
@@ -40,7 +40,7 @@ namespace Papercut
 
         /// <summary>
         /// Root of the Back face's authored content, in Back-space (see <see cref="SheetGeometry.BackToFront"/>).
-        /// Posed by <see cref="SheetOcclusion"/> so exposed content lands where the Flap does.
+        /// Never moved; exposed Back content is placed by <see cref="SheetOcclusion"/> through its occludees.
         /// </summary>
         public Transform Back => back;
 

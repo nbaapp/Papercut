@@ -12,13 +12,14 @@ namespace Papercut
     /// Blocking is plain Physics2D between the region's solid collider and the player's body; gating tells
     /// Physics2D to ignore that pair while the player holds the ability. Must sit under a <see cref="Sheet"/>'s
     /// Front or Back root. Folding reaches it through <see cref="IFoldOccludee"/>: a covered Front region is
-    /// gone for collision (Aaron, 2026-08-26), a partially covered one is clipped to its visible part, and a
-    /// Back region exists only where the landed Flap exposes it. The clipped shape is an
+    /// gone for collision (Aaron, 2026-08-26), a partially covered one is clipped to its visible part, a
+    /// Back region exists only where a landed Flap exposes it, and a region folded twice comes back Front-up
+    /// wherever it landed. The clipped shape is an
     /// <see cref="OccludedBoxCollider"/>.
     /// </remarks>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(BoxCollider2D))]
-    public sealed class TerrainRegion : MonoBehaviour, IFoldOccludee
+    public sealed class TerrainRegion : MonoBehaviour, IFoldOccludee, IArrivalObstacle
     {
         [SerializeField, Tooltip("Ability the player must hold to cross this region. None means it is a wall and " +
             "can never be crossed. If several flags are set, the player needs all of them.")]
@@ -87,13 +88,21 @@ namespace Papercut
             playerCollider = null;
         }
 
+        // ----- IArrivalObstacle -----
+
+        public bool TryGetSolidFootprint(PlayerAbilities player, out Rect sheetLocal)
+        {
+            sheetLocal = sheet != null && sheet.Front != null ? FaceLocalFootprint(sheet.Front) : Rect.zero;
+            return sheet != null && sheet.Front != null && !IsPassableBy(player);
+        }
+
         // ----- IFoldOccludee -----
 
         public Rect FaceLocalFootprint(Transform faceRoot) => FoldFootprint.FaceLocalRect(Box, faceRoot);
 
-        public void OnFoldCoverageChanged(in CoverageResult coverage, Transform faceRoot)
+        public void OnFoldCoverageChanged(in CoverageResult coverage, Transform space)
         {
-            Occluded.Apply(coverage, faceRoot);
+            Occluded.Apply(coverage, space);
             Apply();
         }
 

@@ -5,16 +5,18 @@ namespace Papercut
 {
     /// <summary>
     /// Draws a Sheet by render-texture compositing (Bible decision #2, chosen by Aaron): a camera per face
-    /// renders that face's content into a texture; the visible sheet is a Base mesh textured from the Front
-    /// texture plus a landed-Flap mesh textured from the Back texture through the fold's reflection, plus crease
-    /// lines. The lifted region is simply not drawn, so the Desk shows through.
+    /// renders that face's content into a texture; the visible sheet is one mesh per layer of the folded sheet
+    /// (<see cref="SheetLayers"/>), each textured from the Front or Back texture through the inverse of the
+    /// layer's transform, stacked in order, plus crease lines. Wherever no layer lies the Desk shows through.
     /// </summary>
     /// <remarks>
     /// Face content sits on the <see cref="FoldLayers"/> layers, which the main camera does not render, so a sheet is
-    /// visible only through this component. The Back camera is a child of the Back root and renders Back-space
-    /// whatever the root's pose. Textures and cameras exist only while the sheet is in view. No readbacks.
+    /// visible only through this component. The face cameras are children of the (never moved) face roots and
+    /// render each face's authored space. Textures and cameras exist only while the sheet is in view. No readbacks.
     /// Colours are per renderer (a material property block), so the materials only need a texture and a
-    /// colour: URP/Unlit, transparent. The Flap tint follows the first displayed fold - one fold is exposed at a time.
+    /// colour: URP/Unlit, transparent. Each layer's tint follows the state of the fold that last moved it, so a
+    /// dragged fold tints only the pieces it lifts. Layer meshes are pooled; each sits at its own z so the
+    /// transparent sort draws them bottom to top.
     /// Crease lines are marks on the sheet, not overlays: they are drawn as face content under the Front root and,
     /// mirrored into Back-space, under the Back root, so the textures carry them and a later fold lifts, hides or
     /// brings them around like the rest of the sheet. The Seam border stays an overlay: it marks a position.
@@ -23,9 +25,11 @@ namespace Papercut
     [RequireComponent(typeof(Sheet))]
     public sealed class RenderTextureFoldRenderer : MonoBehaviour, IFoldRenderer
     {
-        const float BaseZ = 0.05f;
-        const float FlapZ = 0.02f;
-        const float SeamZ = 0.015f;
+        /// <summary>Local z of the bottom layer; each layer above sits <see cref="LayerZStep"/> nearer the camera.</summary>
+        const float BaseZ = 0.5f;
+        const float LayerZStep = 0.01f;
+        /// <summary>Local z of the Seam overlay: in front of every layer that fits below <see cref="BaseZ"/>.</summary>
+        const float SeamZ = 0.005f;
         /// <summary>Face-local z of crease lines: in front of every authored face element (surface at 0, terrain sprites at -0.05).</summary>
         const float FaceCreaseZ = -0.1f;
         const float CameraDistance = 5f;
@@ -77,13 +81,18 @@ namespace Papercut
         Camera backCamera;
         RenderTexture frontTexture;
         RenderTexture backTexture;
-        MeshPart basePart, flapPart, seamPart;
+        MeshPart seamPart;
+        readonly List<MeshPart> layerParts = new();
         readonly List<MeshPart> creaseParts = new(4); // [Front live, Front remembered, Back live, Back remembered]
         MaterialPropertyBlock block;
         readonly List<FoldVisual> shownFolds = new();
-        readonly List<Crease> shownCreases = new();
-        readonly MeshBuilder builder = new();
+        readonly List<CreaseMark> shownCreases = new();
+        readonly PolygonMeshBuilder builder = new();
+        readonly List<FoldEffect> replayEffects = new();
+        SheetLayers shownLayers;
         bool inView;
+        bool anyBackUp;
+        bool reportedTooManyLayers;
 
         void Awake()
         {
@@ -103,9 +112,8 @@ namespace Papercut
             if (faceMaterial == null || creaseMaterial == null)
                 Debug.LogError($"RenderTextureFoldRenderer on '{name}' is missing a material.", this);
 
-            basePart = CreateMeshPart("Base", transform, BaseZ, faceMaterial, gameObject.layer);
-            flapPart = CreateMeshPart("Flap", transform, FlapZ, faceMaterial, gameObject.layer);
             seamPart = CreateMeshPart("Seam", transform, SeamZ, creaseMaterial, gameObject.layer);
+            layerParts.Clear();
             creaseParts.Clear();
             foreach (var face in new[] { SheetFace.Front, SheetFace.Back })
             {
@@ -126,12 +134,14 @@ namespace Papercut
         void OnDisable()
         {
             ReleaseView();
-            foreach (var part in new[] { basePart, flapPart, seamPart })
-                part?.Destroy();
+            seamPart?.Destroy();
+            foreach (var part in layerParts)
+                part.Destroy();
+            layerParts.Clear();
             foreach (var part in creaseParts)
                 part?.Destroy();
             creaseParts.Clear();
-            basePart = flapPart = seamPart = null;
+            seamPart = null;
         }
 
         void LateUpdate()
@@ -150,8 +160,10 @@ namespace Papercut
             if (!inView)
                 return;
             frontCamera.enabled = true;
-            backCamera.enabled = shownFolds.Count > 0;
+            backCamera.enabled = anyBackUp;
         }
+
+        public float SurfaceZ(int layerIndex) => BaseZ - Mathf.Max(0, layerIndex) * LayerZStep - LayerZStep * 0.5f;
 
         public void Draw(in FoldDisplay display)
         {
@@ -159,14 +171,17 @@ namespace Papercut
             shownFolds.AddRange(display.Folds);
             shownCreases.Clear();
             shownCreases.AddRange(display.RememberedCreases);
-            if (basePart == null)
+            shownLayers = display.Layers;
+            replayEffects.Clear();
+            replayEffects.AddRange(display.Effects);
+            if (seamPart == null)
                 return;
             BuildMeshes();
         }
 
         // ----- view gating -----
 
-        /// <summary>True if the sheet can be on screen. A Flap never leaves the sheet, so the sheet's own bounds suffice.</summary>
+        /// <summary>True if the sheet can be on screen. No piece ever leaves the sheet rect, so the sheet's own bounds suffice.</summary>
         bool IsInView()
         {
             var cam = view.Camera;
@@ -205,7 +220,7 @@ namespace Papercut
             if (frontTexture != null) { frontTexture.Release(); Destroy(frontTexture); }
             if (backTexture != null) { backTexture.Release(); Destroy(backTexture); }
             frontTexture = backTexture = null;
-            if (basePart != null)
+            if (seamPart != null)
                 BuildMeshes(); // Re-bind the property blocks without the destroyed textures.
         }
 
@@ -270,76 +285,84 @@ namespace Papercut
 
         void BuildMeshes()
         {
-            var sheetRect = FoldGeometry.Sheet;
+            // The display carries the replayed folds: where every piece of the sheet lies, and what each fold did.
+            var stack = shownLayers ?? SheetLayers.Flat;
+            anyBackUp = stack.AnyBackUp;
 
-            // Base: the sheet minus every Flap.
-            var basePolygon = ConvexPolygon.FromRect(sheetRect);
-            foreach (var visual in shownFolds)
+            // One mesh per layer, bottom to top, each textured from its face through the inverse of its transform.
+            var layers = stack.Layers;
+            var maxLayers = Mathf.FloorToInt((BaseZ - SeamZ) / LayerZStep);
+            if (layers.Count > maxLayers && !reportedTooManyLayers)
             {
-                var crease = FoldGeometry.CreaseOf(visual.Fold);
-                basePolygon = basePolygon.ClipToHalfPlane(crease.Point, crease.FlapNormal, keepPositive: false);
+                reportedTooManyLayers = true;
+                Debug.LogError($"Sheet '{sheet.name}' has {layers.Count} layers; only {maxLayers} fit between the Base and the Seam overlay. Upper layers share a depth and may draw in the wrong order.", this);
             }
-            builder.Clear();
-            builder.AddPolygon(basePolygon, v => UvOf(v));
-            basePart.Apply(builder, block, frontTexture, Color.white);
-
-            // Flap: each fold's landed region, textured from Back-space through the reflection.
-            builder.Clear();
-            var flapTint = Color.white;
-            foreach (var visual in shownFolds)
+            while (layerParts.Count < layers.Count)
+                layerParts.Add(CreateMeshPart($"Layer {layerParts.Count}", transform, BaseZ, faceMaterial, gameObject.layer));
+            for (int k = 0; k < layerParts.Count; k++)
             {
-                var fold = visual.Fold;
-                builder.AddPolygon(FoldGeometry.LandedRegion(fold), v => UvOf(FoldGeometry.LandedToBack(fold, v)));
-            }
-            if (shownFolds.Count > 0)
-            {
-                flapTint = shownFolds[0].State switch
+                builder.Clear();
+                if (k >= layers.Count)
+                {
+                    layerParts[k].Apply(builder, block, null, Color.white);
+                    continue;
+                }
+                var layer = layers[k];
+                var inverse = layer.ToDesk.Inverse;
+                var frontUp = layer.FrontUp;
+                builder.AddPolygon(layer.Desk, v =>
+                {
+                    var original = inverse.Apply(v);
+                    return UvOf(frontUp ? original : SheetGeometry.BackToFront(original));
+                });
+                var tint = layer.IsBase ? Color.white : shownFolds[layer.MovedBy].State switch
                 {
                     FoldVisualState.Preview => previewTint,
                     FoldVisualState.PreviewInvalid => invalidTint,
                     FoldVisualState.Retreating => retreatingTint,
                     _ => Color.white,
                 };
+                layerParts[k].SetLocalZ(BaseZ - Mathf.Min(k, maxLayers) * LayerZStep);
+                layerParts[k].Apply(builder, block, frontUp ? frontTexture : backTexture, tint);
             }
-            flapPart.Apply(builder, block, backTexture, flapTint);
 
-            // Creases are marks on both faces of the sheet: Front-space under Front, Back-space (x mirrored) under Back.
+            // Creases are marks on both faces of the sheet, in each face's authored space. A live mark is shifted
+            // wholly to one side of the fold line (see CreaseMark.Shift) so that the half under the landed Flap is
+            // not lost; a remembered mark is drawn centred.
             for (int face = 0; face < 2; face++)
             {
-                var mirror = face == 1;
-                Vector2 F(Vector2 p) => mirror ? SheetGeometry.BackToFront(p) : p;
+                var which = face == 0 ? SheetFace.Front : SheetFace.Back;
 
                 builder.Clear();
-                foreach (var visual in shownFolds)
+                foreach (var effect in replayEffects)
                 {
-                    if (!FoldGeometry.TryCreaseSegment(visual.Fold, out var a, out var b))
-                        continue;
-                    // A live crease sits on the fold line, where the Base ends and the landed Flap begins. Drawn
-                    // centred, only half of it would show (the Flap covers the other half with the mirror image of
-                    // this same half). So the Front copy is shifted wholly onto the Base side and the Back copy
-                    // wholly onto the Flap side - which the Flap reflects onto that same strip - giving one line of
-                    // full width on both faces.
-                    var shift = FoldGeometry.CreaseOf(visual.Fold).FlapNormal * (creaseWidth * 0.5f) * (mirror ? 1f : -1f);
-                    builder.AddLine(F(a + shift), F(b + shift), creaseWidth);
+                    foreach (var mark in effect.CreaseMarks)
+                    {
+                        if (mark.Face != which)
+                            continue;
+                        var shift = mark.Shift * (creaseWidth * 0.5f);
+                        builder.AddLine(mark.A + shift, mark.B + shift, creaseWidth);
+                    }
                 }
                 creaseParts[face * 2]?.Apply(builder, block, null, creaseColor);
 
                 builder.Clear();
-                foreach (var crease in shownCreases)
+                foreach (var mark in shownCreases)
                 {
-                    if (FoldGeometry.TryClipLineToRect(crease, sheetRect, out var a, out var b))
-                        builder.AddLine(F(a), F(b), creaseWidth);
+                    if (mark.Face == which)
+                        builder.AddLine(mark.A, mark.B, creaseWidth);
                 }
                 creaseParts[face * 2 + 1]?.Apply(builder, block, null, rememberedCreaseColor);
             }
 
-            // Seam border: only while a fold is being dragged, so the Flap's edge is unmistakable.
+            // Seam border: only while a fold is being dragged, so the landed edge is unmistakable.
             builder.Clear();
-            foreach (var visual in shownFolds)
+            for (int i = 0; i < shownFolds.Count; i++)
             {
-                if (visual.State != FoldVisualState.Preview && visual.State != FoldVisualState.PreviewInvalid)
+                var state = shownFolds[i].State;
+                if (state != FoldVisualState.Preview && state != FoldVisualState.PreviewInvalid)
                     continue;
-                foreach (var (a, b) in FoldGeometry.SeamSegments(visual.Fold))
+                foreach (var (a, b) in replayEffects[i].SeamSegments)
                     builder.AddLine(a, b, seamWidth);
             }
             seamPart.Apply(builder, block, null, seamColor);
@@ -359,7 +382,7 @@ namespace Papercut
                 this.renderer = renderer;
             }
 
-            public void Apply(MeshBuilder builder, MaterialPropertyBlock block, Texture texture, Color color)
+            public void Apply(PolygonMeshBuilder builder, MaterialPropertyBlock block, Texture texture, Color color)
             {
                 builder.Apply(filter.sharedMesh);
                 block.Clear();
@@ -369,72 +392,19 @@ namespace Papercut
                 renderer.SetPropertyBlock(block);
             }
 
+            public void SetLocalZ(float z)
+            {
+                var t = filter.transform;
+                var p = t.localPosition;
+                t.localPosition = new Vector3(p.x, p.y, z);
+            }
+
             public void Destroy()
             {
                 if (filter == null)
                     return;
                 Object.Destroy(filter.sharedMesh);
                 Object.Destroy(filter.gameObject);
-            }
-        }
-
-        /// <summary>Accumulates fan-triangulated convex polygons and line quads into one mesh.</summary>
-        sealed class MeshBuilder
-        {
-            readonly List<Vector3> vertices = new();
-            readonly List<Vector2> uvs = new();
-            readonly List<int> triangles = new();
-
-            public void Clear()
-            {
-                vertices.Clear();
-                uvs.Clear();
-                triangles.Clear();
-            }
-
-            public void AddPolygon(ConvexPolygon polygon, System.Func<Vector2, Vector2> uvOf)
-            {
-                if (polygon.IsEmpty)
-                    return;
-                var start = vertices.Count;
-                var verts = polygon.Vertices;
-                // Unity front faces wind clockwise as seen by the camera, which looks along +z at this xy plane.
-                var ccw = SignedArea(verts) > 0f;
-                for (int i = 0; i < verts.Count; i++)
-                {
-                    vertices.Add(verts[i]);
-                    uvs.Add(uvOf(verts[i]));
-                }
-                for (int i = 1; i + 1 < verts.Count; i++)
-                {
-                    triangles.Add(start);
-                    triangles.Add(ccw ? start + i + 1 : start + i);
-                    triangles.Add(ccw ? start + i : start + i + 1);
-                }
-            }
-
-            public void AddLine(Vector2 a, Vector2 b, float width)
-            {
-                var dir = (b - a).normalized;
-                var n = new Vector2(-dir.y, dir.x) * (width * 0.5f);
-                AddPolygon(new ConvexPolygon(new List<Vector2> { a - n, b - n, b + n, a + n }), _ => Vector2.zero);
-            }
-
-            public void Apply(Mesh mesh)
-            {
-                mesh.Clear();
-                mesh.SetVertices(vertices);
-                mesh.SetUVs(0, uvs);
-                mesh.SetTriangles(triangles, 0);
-                mesh.RecalculateBounds();
-            }
-
-            static float SignedArea(IReadOnlyList<Vector2> v)
-            {
-                float twice = 0f;
-                for (int i = 0, n = v.Count; i < n; i++)
-                    twice += v[i].x * v[(i + 1) % n].y - v[(i + 1) % n].x * v[i].y;
-                return twice;
             }
         }
     }

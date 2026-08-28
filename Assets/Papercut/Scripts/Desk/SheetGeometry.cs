@@ -32,5 +32,8 @@ namespace Papercut
         /// This is the only place the convention lives.
         /// </remarks>
         public static Vector2 BackToFront(Vector2 backLocal) => new(-backLocal.x, backLocal.y);
+
+        /// <summary>The Front-space rect under a Back-space rect (its mirror in x); the same map the other way.</summary>
+        public static Rect BackToFront(Rect back) => Rect.MinMaxRect(-back.xMax, back.yMin, -back.xMin, back.yMax);
     }
 }

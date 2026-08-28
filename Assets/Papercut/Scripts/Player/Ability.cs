@@ -17,5 +17,7 @@ namespace Papercut
     {
         None = 0,
         Swim = 1 << 0,
+        /// <summary>Lets the player push blocks that ask for it (Design Doc: push/pull as a possible early unlockable). Unused by content for now (Aaron, 2026-08-27).</summary>
+        Push = 1 << 1,
     }
 }

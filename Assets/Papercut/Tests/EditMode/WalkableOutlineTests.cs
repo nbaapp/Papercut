@@ -7,10 +7,18 @@ namespace Papercut.Tests
 {
     public sealed class WalkableOutlineTests
     {
-        const float HW = 5.5f, HH = 4.25f, H = 8.5f;
+        const float HW = 5.5f, HH = 4.25f;
         const float Eps = 1e-4f;
 
-        static List<OutlineSegment> Outline(params Fold[] folds) => WalkableOutline.Segments(folds);
+        static SheetLayers Replay(params Fold[] folds)
+        {
+            var stack = SheetLayers.Flat;
+            for (int i = 0; i < folds.Length; i++)
+                stack = stack.Apply(folds[i], i, out _);
+            return stack;
+        }
+
+        static List<OutlineSegment> Outline(params Fold[] folds) => WalkableOutline.Segments(Replay(folds).Footprint);
 
         static void AssertClosed(List<OutlineSegment> segments)
         {
@@ -18,6 +26,14 @@ namespace Papercut.Tests
             var endpoints = segments.SelectMany(s => new[] { s.A, s.B }).ToList();
             foreach (var p in endpoints)
                 Assert.AreEqual(2, endpoints.Count(q => Vector2.Distance(p, q) < 1e-3f), $"endpoint {p}");
+        }
+
+        static void AssertNoDegenerateOrDuplicate(List<OutlineSegment> segments, string label)
+        {
+            Assert.IsTrue(segments.All(s => s.Length > 1e-4f), label + ": zero-length segment");
+            for (int i = 0; i < segments.Count; i++)
+            for (int j = i + 1; j < segments.Count; j++)
+                Assert.IsFalse(Vector2.Distance(segments[i].A, segments[j].A) < 1e-4f && Vector2.Distance(segments[i].B, segments[j].B) < 1e-4f, label + ": duplicate segment");
         }
 
         [Test]
@@ -38,7 +54,8 @@ namespace Papercut.Tests
         {
             var segments = Outline(new Fold(FoldAnchor.EdgeSouth, 3f)); // crease y = -1.25; landed [-1.25, 1.75] inside
 
-            var crease = segments.Single(s => s.Kind == OutlineKind.Crease);
+            Assert.AreEqual(4, segments.Count);
+            var crease = segments.Single(s => s.Kind == OutlineKind.Wall);
             Assert.AreEqual(-1.25f, crease.A.y, Eps);
             Assert.AreEqual(-1.25f, crease.B.y, Eps);
             Assert.AreEqual(2f * HW, crease.Length, Eps);
@@ -53,28 +70,12 @@ namespace Papercut.Tests
         }
 
         [Test]
-        public void EdgeFold_DeeperThanHalf_ExtendsSidesAndUsesReflectedFarEdge()
-        {
-            var segments = Outline(new Fold(FoldAnchor.EdgeSouth, 6f)); // crease y = 1.75; landed [1.75, 7.75]
-
-            var north = segments.Single(s => s.Kind == OutlineKind.SheetEdge && s.Direction == GridDirection.North);
-            Assert.AreEqual(7.75f, north.A.y, Eps, "the reflected south edge faces north");
-            var east = segments.Where(s => s.Kind == OutlineKind.SheetEdge && s.Direction == GridDirection.East).ToList();
-            Assert.AreEqual(1, east.Count, "coincident side edges merged");
-            Assert.AreEqual(7.75f - 1.75f, east[0].Length, Eps);
-            AssertClosed(segments);
-        }
-
-        [Test]
         public void AtMaxDepth_OutlineIsClosedWithNoDegenerateSegments()
         {
             foreach (var anchor in new[] { FoldAnchor.EdgeSouth, FoldAnchor.EdgeEast, FoldAnchor.CornerNorthEast })
             {
                 var segments = Outline(new Fold(anchor, FoldGeometry.MaxDepth(anchor)));
-                Assert.IsTrue(segments.All(s => s.Length > 1e-4f), anchor + ": zero-length segment");
-                for (int i = 0; i < segments.Count; i++)
-                for (int j = i + 1; j < segments.Count; j++)
-                    Assert.IsFalse(Vector2.Distance(segments[i].A, segments[j].A) < 1e-4f && Vector2.Distance(segments[i].B, segments[j].B) < 1e-4f, anchor + ": duplicate segment");
+                AssertNoDegenerateOrDuplicate(segments, anchor.ToString());
                 AssertClosed(segments);
             }
         }
@@ -85,7 +86,7 @@ namespace Papercut.Tests
             var segments = Outline(new Fold(FoldAnchor.CornerNorthEast, 2f));
 
             Assert.AreEqual(5, segments.Count);
-            var crease = segments.Single(s => s.Kind == OutlineKind.Crease);
+            var crease = segments.Single(s => s.Kind == OutlineKind.Wall);
             Assert.AreEqual(2f * Mathf.Sqrt(2f), crease.Length, Eps);
             Assert.AreEqual(2f * HH - 2f, segments.Single(s => s.Kind == OutlineKind.SheetEdge && s.Direction == GridDirection.East).Length, Eps, "east edge runs up to where the crease meets it");
             AssertClosed(segments);
@@ -105,15 +106,13 @@ namespace Papercut.Tests
         [Test]
         public void Convexity_Flat_AllFourCornersConvex()
         {
-            var segments = Outline();
-            Assert.AreEqual(4, ConvexCornerCount(segments));
+            Assert.AreEqual(4, ConvexCornerCount(Outline()));
         }
 
         [Test]
         public void Convexity_EdgeFold_RectangleStaysConvex()
         {
             Assert.AreEqual(4, ConvexCornerCount(Outline(new Fold(FoldAnchor.EdgeSouth, 3f))));
-            Assert.AreEqual(4, ConvexCornerCount(Outline(new Fold(FoldAnchor.EdgeSouth, 6f))));
         }
 
         [Test]
@@ -122,46 +121,78 @@ namespace Papercut.Tests
             Assert.AreEqual(5, ConvexCornerCount(Outline(new Fold(FoldAnchor.CornerNorthEast, 2f))));
         }
 
-        [Test]
-        public void Convexity_Overhang_HasOneConcaveCornerWhereItMeetsTheSheet()
-        {
-            // Geometry only: unreachable through input (no overhang).
-            var fold = new Fold(FoldAnchor.CornerNorthEast, 10f);
-            var segments = Outline(fold);
-            var distinct = new List<Vector2>();
-            foreach (var v in segments.SelectMany(s => new[] { s.A, s.B }))
-                if (!distinct.Any(d => Vector2.Distance(d, v) < 1e-3f)) distinct.Add(v);
-            var vertices = distinct.Count;
-            Assert.AreEqual(7, vertices, "NW, top/crease, crease/east, east/bottom, bottom/west, west/sheet-bottom (concave), SW");
-            var concaveAt = new Vector2(HW - 10f, -HH); // where the overhang's west edge leaves the sheet's south edge
+        // ----- several folds -----
 
-            Assert.AreEqual(vertices - 1, ConvexCornerCount(segments));
-            foreach (var s in segments)
-            {
-                if (Vector2.Distance(s.A, concaveAt) < 1e-3f) Assert.IsFalse(WalkableOutline.IsConvexAt(segments, s, s.A), s.ToString());
-                if (Vector2.Distance(s.B, concaveAt) < 1e-3f) Assert.IsFalse(WalkableOutline.IsConvexAt(segments, s, s.B), s.ToString());
-            }
+        [Test]
+        public void TwoIndependentFolds_TwoCreaseWalls()
+        {
+            var segments = Outline(new Fold(FoldAnchor.EdgeNorth, 1f), new Fold(FoldAnchor.EdgeSouth, 2f));
+
+            Assert.AreEqual(4, segments.Count);
+            var walls = segments.Where(s => s.Kind == OutlineKind.Wall).ToList();
+            Assert.AreEqual(2, walls.Count);
+            CollectionAssert.AreEquivalent(new[] { 3.25f, -2.25f }, walls.Select(w => Mathf.Round(w.A.y * 1000f) / 1000f));
+            CollectionAssert.AreEquivalent(new[] { GridDirection.East, GridDirection.West }, segments.Where(s => s.Kind == OutlineKind.SheetEdge).Select(s => s.Direction));
+            AssertClosed(segments);
         }
 
         [Test]
-        public void CornerFold_DeeperThanHeight_HasWalkableOverhang()
+        public void Stacked_LandingIntoAnEmptiedStrip_FarEdgeIsAWallNotAnExit()
         {
-            // Geometry only: such depths cannot be made through input (Aaron: no overhang).
-            var segments = Outline(new Fold(FoldAnchor.CornerNorthEast, 10f));
+            // North strip lifted (y > 2.25 empty), then the south Flap lands up to y = 3.75 over base and desk alike.
+            var segments = Outline(new Fold(FoldAnchor.EdgeNorth, 2f), new Fold(FoldAnchor.EdgeSouth, 4f));
 
-            var minY = segments.Min(s => Mathf.Min(s.A.y, s.B.y));
-            Assert.AreEqual(HH - 10f, minY, Eps, "the overhang's reflected edge is on the outline");
-            Assert.IsTrue(segments.Any(s => s.Kind == OutlineKind.SheetEdge && s.Direction == GridDirection.South && Mathf.Abs(s.A.y - (HH - 10f)) < Eps), "overhang bottom faces south");
-            Assert.IsTrue(segments.Any(s => s.Kind == OutlineKind.Crease));
+            Assert.AreEqual(4, segments.Count, string.Join("; ", segments.Select(s => $"{s.Kind} {s.A}-{s.B}")));
+            var top = segments.Single(s => Mathf.Abs(s.A.y - 3.75f) < Eps && Mathf.Abs(s.B.y - 3.75f) < Eps);
+            Assert.AreEqual(OutlineKind.Wall, top.Kind, "a landed edge inside the sheet rect is not an exit");
+            Assert.AreEqual(Vector2.up, top.Outward);
+            var bottom = segments.Single(s => Mathf.Abs(s.A.y + 0.25f) < Eps && Mathf.Abs(s.B.y + 0.25f) < Eps);
+            Assert.AreEqual(OutlineKind.Wall, bottom.Kind);
+            CollectionAssert.AreEquivalent(new[] { GridDirection.East, GridDirection.West }, segments.Where(s => s.Kind == OutlineKind.SheetEdge).Select(s => s.Direction));
+            Assert.AreEqual(4f, segments.Single(s => s.Direction == GridDirection.East && s.Kind == OutlineKind.SheetEdge).Length, Eps);
             AssertClosed(segments);
+            Assert.AreEqual(4, ConvexCornerCount(segments));
+        }
 
-            // No segment lies strictly inside the walkable area: each is a boundary of sheet ∪ reflected sheet.
-            var sheet = FoldGeometry.Sheet;
-            var mirrored = FoldGeometry.ReflectedSheet(new Fold(FoldAnchor.CornerNorthEast, 10f));
+        [Test]
+        public void FoldOnFold_OutlineIsTheUnion_NoInteriorWalls()
+        {
+            // North d=2 then west d=3: everything west of x = -2.5 (two layers) lands on x in [-2.5, 0.5].
+            var stack = Replay(new Fold(FoldAnchor.EdgeNorth, 2f), new Fold(FoldAnchor.EdgeWest, 3f));
+            var segments = WalkableOutline.Segments(stack.Footprint);
+
+            Assert.AreEqual(4, segments.Count, string.Join("; ", segments.Select(s => $"{s.Kind} {s.A}-{s.B}")));
+            AssertClosed(segments);
+            AssertNoDegenerateOrDuplicate(segments, "fold on fold");
             foreach (var s in segments.Where(s => s.Kind == OutlineKind.SheetEdge))
             {
-                var probe = s.Midpoint + s.Outward * 0.01f;
-                Assert.IsFalse(sheet.Contains(probe) || mirrored.Contains(probe), $"segment {s.A}-{s.B} has walkable ground outside it");
+                var n = s.Direction.ToVector();
+                var extent = Mathf.Abs(Vector2.Dot(SheetGeometry.HalfSize, n));
+                Assert.AreEqual(extent, Vector2.Dot(s.A, n), Eps, "sheet edges lie on the sheet rect");
+                Assert.AreEqual(extent, Vector2.Dot(s.B, n), Eps);
+            }
+            foreach (var s in segments)
+            {
+                var outside = s.Midpoint + s.Outward * 0.01f;
+                var inside = s.Midpoint - s.Outward * 0.01f;
+                Assert.IsFalse(stack.Footprint.Any(p => p.Contains(outside)), $"{s.Kind} {s.A}-{s.B}: sheet on the outward side");
+                Assert.IsTrue(stack.Footprint.Any(p => p.Contains(inside)), $"{s.Kind} {s.A}-{s.B}: no sheet on the inward side");
+            }
+            Assert.AreEqual(2, segments.Count(s => s.Kind == OutlineKind.Wall), "the west crease and the north edge of the stack");
+        }
+
+        [Test]
+        public void Stacked_ThreeFolds_OutlineIsClosedAndTight()
+        {
+            var stack = Replay(new Fold(FoldAnchor.EdgeNorth, 2f), new Fold(FoldAnchor.EdgeSouth, 4f), new Fold(FoldAnchor.CornerNorthEast, 3f));
+            var segments = WalkableOutline.Segments(stack.Footprint);
+
+            AssertClosed(segments);
+            AssertNoDegenerateOrDuplicate(segments, "three folds");
+            foreach (var s in segments)
+            {
+                Assert.IsFalse(stack.Footprint.Any(p => p.Contains(s.Midpoint + s.Outward * 0.01f)), $"{s.Kind} {s.A}-{s.B}: sheet on the outward side");
+                Assert.IsTrue(stack.Footprint.Any(p => p.Contains(s.Midpoint - s.Outward * 0.01f)), $"{s.Kind} {s.A}-{s.B}: no sheet on the inward side");
             }
         }
     }

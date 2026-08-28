@@ -45,5 +45,21 @@ namespace Papercut.Tests
             Assert.AreEqual(fx, front.x, 1e-6f);
             Assert.AreEqual(fy, front.y, 1e-6f);
         }
+
+        [Test]
+        public void BackToFront_Rect_MirrorsXAndSwapsEdges()
+        {
+            var back = Rect.MinMaxRect(1f, -2f, 3f, 0.5f);
+            var front = SheetGeometry.BackToFront(back);
+
+            Assert.AreEqual(-3f, front.xMin, 1e-6f);
+            Assert.AreEqual(-1f, front.xMax, 1e-6f);
+            Assert.AreEqual(-2f, front.yMin, 1e-6f);
+            Assert.AreEqual(0.5f, front.yMax, 1e-6f);
+            Assert.AreEqual(back.width, front.width, 1e-6f);
+            var roundTrip = SheetGeometry.BackToFront(front); // the same map is its own inverse
+            Assert.AreEqual(back.xMin, roundTrip.xMin, 1e-6f);
+            Assert.AreEqual(back.xMax, roundTrip.xMax, 1e-6f);
+        }
     }
 }

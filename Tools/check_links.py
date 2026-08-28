@@ -26,6 +26,7 @@ def object_ids(path):
     bl = blocks(text)
     for t, fid, stripped, body in bl:
         ids.add(int(fid))
+    owners = {}  # derived id -> [(instance, base)]: a referenced derived id must have exactly one owner
     for t, fid, stripped, body in bl:
         if t == "1001":
             src = re.search(r"m_SourcePrefab: \{fileID: 100100000, guid: ([0-9a-f]{32})", body).group(1)
@@ -33,9 +34,22 @@ def object_ids(path):
             if src_path is None or not os.path.exists(src_path):
                 print(f"  {os.path.relpath(path, ROOT)}: PrefabInstance {fid} source guid {src} missing"); ERR.append(1); continue
             for base in object_ids(src_path):
-                ids.add((base ^ int(fid)) & MASK)
+                d = (base ^ int(fid)) & MASK
+                owners.setdefault(d, []).append((int(fid), base))
+                ids.add(d)
+    _owners[path] = owners
     _cache[path] = ids
     return ids
+
+_owners = {}
+def ambiguous(path, text, fid):
+    """A local reference to a derived id is ambiguous if two (instance, source) pairs derive to it, or a non-stripped
+    local block also carries it. (Unreferenced collisions are harmless: Unity only materialises ids that are used.)"""
+    object_ids(path)
+    owners = _owners.get(path, {}).get(fid, [])
+    m = re.search(rf"^--- !u!\d+ &{fid}( stripped)?\n", text, re.M)
+    local_non_stripped = m is not None and m.group(1) is None
+    return len(owners) + (1 if local_non_stripped else 0) > 1, owners
 
 GUIDS = guid_map()
 ERR = []
@@ -52,8 +66,14 @@ def check(path):
         if fid == 0: continue
         if guid is None:
             n_local += 1
-            if fid not in local:
+            if fid not in local and fid not in object_ids(path):
                 print(f"  {os.path.relpath(path, ROOT)}: local fileID {fid} not defined"); ERR.append(1)
+            elif fid not in local:
+                # A referenced object of a nested instance must be declared as a stripped block, or Unity resolves it to null.
+                print(f"  {os.path.relpath(path, ROOT)}: local fileID {fid} is a derived id with no stripped block; add '--- !u!<type> &{fid} stripped' for it"); ERR.append(1)
+            amb, owners = ambiguous(path, text, fid)
+            if amb:
+                print(f"  {os.path.relpath(path, ROOT)}: local fileID {fid} is ambiguous - derived by {owners}; pick instance ids whose pairwise XOR exceeds every source fileID"); ERR.append(1)
         else:
             n_ext += 1
             if guid in BUILTIN: continue

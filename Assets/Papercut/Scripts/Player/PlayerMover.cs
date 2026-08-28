@@ -23,6 +23,21 @@ namespace Papercut
         /// <summary>Direction the player is trying to move, magnitude 0..1. Kept even while movement is held.</summary>
         public Vector2 MoveInput => moveInput;
 
+        /// <summary>World units per second at full input, before <see cref="SpeedScale"/>.</summary>
+        public float MoveSpeed => moveSpeed;
+
+        float speedScale = 1f;
+
+        /// <summary>
+        /// Multiplies this step's speed (0..1). State, not a tunable: set each physics step by whatever slows the
+        /// player (e.g. <see cref="BlockPusher"/> while pushing a block) and reset to 1 by the same thing.
+        /// </summary>
+        public float SpeedScale
+        {
+            get => speedScale;
+            set => speedScale = Mathf.Clamp01(value);
+        }
+
         bool movementEnabled = true;
         RigidbodyInterpolation2D heldInterpolation;
 
@@ -71,7 +86,7 @@ namespace Papercut
 
         void FixedUpdate()
         {
-            body.linearVelocity = MovementEnabled ? moveInput * moveSpeed : Vector2.zero;
+            body.linearVelocity = MovementEnabled ? moveInput * (moveSpeed * speedScale) : Vector2.zero;
         }
     }
 }

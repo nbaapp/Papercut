@@ -1,20 +1,23 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
-using UnityEngine.Serialization;
 
 namespace Papercut
 {
     /// <summary>
     /// How the player folds (Bible decision #3, scheme chosen by Aaron for prototyping): press near an edge or
-    /// corner of the Screen and drag inward — the grabbed edge or corner follows the cursor and the fold
-    /// previews live; release commits; right-click or Escape cancels. A fold that would cover the player shows
-    /// red and is refused on release. Clicking near the crease or the Seam of a folded Screen unfolds it. Folds never
-    /// extend past the sheet: the drag holds at the depth where the Flap's edge reaches the far edge.
+    /// corner of the Screen — or on the crease of an existing fold — and drag inward; the grabbed fold line
+    /// follows the cursor and the fold previews live; release commits; right-click or Escape cancels. A fold
+    /// that would be refused (covers the player, overlaps another fold with stacking off, overhangs) shows red
+    /// and is refused on release. Clicking near the Seam of a fold (where the tape would go) unfolds it.
+    /// Folds never extend past the sheet: the drag holds at the depth where the landed edge reaches the sheet's edge.
     /// </summary>
     /// <remarks>
     /// Lives on the Desk. Mouse and keyboard only for now. Reads the Input System "Fold" action map: Point
     /// (cursor position), Grab (left button), Cancel (right button / Escape). Cursor positions are converted
     /// screen → world → sheet-local every frame; nothing is cached across frames because the grid slides.
+    /// On a press the Seam is tried first (unfold), then a crease (fold further), then the sheet's own edges and
+    /// corners (new fold). The sheet's edges and corners stay grabbable even once folded away; a fold from there
+    /// lifts nothing until its crease reaches the sheet, and shows nothing until then.
     /// </remarks>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(ScreenNavigator))]
@@ -42,9 +45,12 @@ namespace Papercut
             "Keep it below the Desk's sheet gap or a press between two sheets is ambiguous.")]
         float edgeGrabMargin = 0.35f;
 
-        [SerializeField, FormerlySerializedAs("creaseGrabDistance"), Min(0f),
-         Tooltip("A press within this distance of a folded sheet's crease or Seam (where the Flap's edge meets the Front) unfolds it, in sheet units.")]
+        [SerializeField, Min(0f), Tooltip("A press within this distance of a fold's Seam (where the landed Flap's edge meets what it lies on - " +
+            "where the tape would go) unfolds it, in sheet units.")]
         float unfoldGrabDistance = 0.3f;
+
+        [SerializeField, Min(0f), Tooltip("A press within this distance of an existing fold's crease grabs that fold line to fold it further, in sheet units.")]
+        float creaseGrabDistance = 0.3f;
 
         [Header("Depth")]
         [SerializeField, Min(0f), Tooltip("Fold depth is rounded to a multiple of this while dragging. 0 = continuous (Bible decision #10 is open; try both).")]
@@ -57,6 +63,7 @@ namespace Papercut
         InputAction point, grab, cancel;
         bool dragging;
         FoldAnchor dragAnchor;
+        float dragGrabDepth;
         SheetFolds dragTarget;
 
         void Awake()
@@ -115,13 +122,14 @@ namespace Papercut
 
             if (dragging)
             {
-                var fold = DragFold(dragAnchor, local);
+                var fold = DragFold(local);
                 if (grab.WasReleasedThisFrame() || !grab.IsPressed())
                 {
                     dragTarget.SetPreview(null, playerLocal);
-                    // CoversPlayer was already shown red; TooShallow is just a click that never became a drag.
+                    // Refusals already shown red, and a click that never became a drag, are not worth a log line.
                     if (!dragTarget.TryCommit(fold, playerLocal, out var rejection)
-                        && rejection != FoldRejection.CoversPlayer && rejection != FoldRejection.TooShallow)
+                        && rejection != FoldRejection.CoversPlayer && rejection != FoldRejection.OverlapsFold
+                        && rejection != FoldRejection.TooShallow && rejection != FoldRejection.NothingToFold)
                         Debug.Log($"Fold not made: {rejection}.", this);
                     dragging = false;
                     dragTarget = null;
@@ -137,19 +145,40 @@ namespace Papercut
                 return;
 
             var folds = screen.Folds;
-            if (folds.IsFolded)
+            if (folds.TryUnfoldAt(local, playerLocal, unfoldGrabDistance, out var unfoldRejection))
+                return;
+            if (unfoldRejection == FoldRejection.PlayerOnFlap || unfoldRejection == FoldRejection.ObjectOnEdge)
             {
-                if (!folds.TryUnfoldAt(local, playerLocal, unfoldGrabDistance, out var rejection) && rejection != FoldRejection.None)
-                    Debug.Log($"Not unfolded: {rejection}.", this); // The player is on the flap; there is no visual cue yet.
+                Debug.Log($"Not unfolded: {unfoldRejection}.", this); // No visual cue yet.
                 return;
             }
 
-            if (TryResolveAnchor(local, out dragAnchor))
+            // A pinned fold's Seam (CoveredByLaterFold) is where it was when committed and may lie under, or along
+            // the crease of, a later fold - so a grab is tried first and the refusal is reported only if nothing answers.
+            if (folds.CanStartFold)
             {
-                dragging = true;
-                dragTarget = folds;
-                dragTarget.SetPreview(DragFold(dragAnchor, local), playerLocal);
+                if (folds.TryGrabCreaseAt(local, creaseGrabDistance, out var grabbed))
+                {
+                    BeginDrag(folds, grabbed.Anchor, grabbed.Depth, local, playerLocal);
+                    return;
+                }
+                if (TryResolveAnchor(local, out var anchor))
+                {
+                    BeginDrag(folds, anchor, 0f, local, playerLocal);
+                    return;
+                }
             }
+            if (unfoldRejection != FoldRejection.None)
+                Debug.Log($"Not unfolded: {unfoldRejection}.", this); // No visual cue yet.
+        }
+
+        void BeginDrag(SheetFolds target, FoldAnchor anchor, float grabDepth, Vector2 local, Rect playerLocal)
+        {
+            dragging = true;
+            dragTarget = target;
+            dragAnchor = anchor;
+            dragGrabDepth = grabDepth;
+            dragTarget.SetPreview(DragFold(local), playerLocal);
         }
 
         void EndDrag()
@@ -162,9 +191,12 @@ namespace Papercut
             dragTarget = null;
         }
 
-        /// <summary>The fold under the cursor: depth from the drag point, snapped, then clamped so it never overhangs.</summary>
-        Fold DragFold(FoldAnchor anchor, Vector2 local)
-            => new Fold(anchor, Snap(FoldGeometry.DepthForDragPoint(anchor, local))).Clamped;
+        /// <summary>The fold under the cursor: depth from the drag point and the grabbed line, snapped, then held so it never overhangs.</summary>
+        Fold DragFold(Vector2 local)
+        {
+            var depth = Snap(FoldGeometry.DepthForDragPoint(dragAnchor, local, dragGrabDepth));
+            return new Fold(dragAnchor, Mathf.Min(depth, dragTarget.MaxDepth(dragAnchor)));
+        }
 
         float Snap(float depth) => depthSnap > 0f ? Mathf.Round(depth / depthSnap) * depthSnap : depth;
 

@@ -4,11 +4,12 @@ using UnityEngine;
 namespace Papercut
 {
     /// <summary>
-    /// Walls and exits of a Sheet, rebuilt from the walkable outline (<see cref="WalkableOutline"/>) whenever
-    /// the folds change or the sheet becomes/stops being the Screen. Every outline segment gets a solid wall
-    /// just outside it; every sheet-edge segment also gets a <see cref="SheetEdge"/> trigger just inside it,
-    /// so any walkable ground that reaches an edge — Front, Back, overhang — is an exit toward that direction.
-    /// The crease gets a wall only: beyond it the sheet is lifted.
+    /// Walls and exits of a Sheet, rebuilt from the walkable outline (<see cref="WalkableOutline"/>) of the
+    /// sheet's layers whenever the folds change or the sheet becomes/stops being the Screen. Every outline
+    /// segment gets a solid wall just outside it; every sheet-edge segment also gets a <see cref="SheetEdge"/>
+    /// trigger just inside it, so any walkable ground that reaches the sheet's border — Front or Back — is an
+    /// exit toward that direction. A crease, or a landed edge lying over empty desk, gets a wall only; a wall on a
+    /// crease is marked <see cref="CreaseWall"/> (blocks roll across creases, the player does not).
     /// </summary>
     /// <remarks>
     /// Only the Screen has walls and edges (see <see cref="SheetOcclusion"/>). Flat, this produces exactly four
@@ -25,6 +26,9 @@ namespace Papercut
 
         [SerializeField, Min(0.05f), Tooltip("How far inside an edge the exit trigger reaches, in sheet units.")]
         float edgeDepth = 0.5f;
+
+        /// <summary>An outline segment within this of a crease segment (both ends and the middle) is a crease wall, in sheet units.</summary>
+        const float CreaseTolerance = 1e-3f;
 
         Sheet sheet;
         SheetFolds folds;
@@ -66,7 +70,7 @@ namespace Papercut
             if (!sheet.IsScreen)
                 return;
 
-            var segments = WalkableOutline.Segments(folds.Folds);
+            var segments = WalkableOutline.Segments(folds.Layers.Footprint);
             var t = wallThickness;
             foreach (var segment in segments)
             {
@@ -74,7 +78,9 @@ namespace Papercut
                 var extendA = WalkableOutline.IsConvexAt(segments, segment, segment.A) ? t : 0f;
                 var extendB = WalkableOutline.IsConvexAt(segments, segment, segment.B) ? t : 0f;
                 var centre = segment.Midpoint + segment.Outward * (t * 0.5f) + dir * ((extendB - extendA) * 0.5f);
-                AddBox("Wall", dir, centre, new Vector2(segment.Length + extendA + extendB, t), isTrigger: false);
+                var wall = AddBox("Wall", dir, centre, new Vector2(segment.Length + extendA + extendB, t), isTrigger: false);
+                if (segment.Kind == OutlineKind.Wall && OnCrease(segment))
+                    wall.AddComponent<CreaseWall>();
 
                 if (segment.Kind == OutlineKind.SheetEdge)
                 {
@@ -83,6 +89,22 @@ namespace Papercut
                     edge.AddComponent<SheetEdge>().Initialise(sheet, segment.Direction, navigator);
                 }
             }
+        }
+
+        /// <summary>True if the segment lies along a crease of a committed fold.</summary>
+        bool OnCrease(in OutlineSegment segment)
+        {
+            foreach (var effect in folds.Effects)
+            {
+                foreach (var (a, b) in effect.CreaseSegments)
+                {
+                    if (FoldGeometry.DistanceToSegment(segment.A, a, b) <= CreaseTolerance
+                        && FoldGeometry.DistanceToSegment(segment.B, a, b) <= CreaseTolerance
+                        && FoldGeometry.DistanceToSegment(segment.Midpoint, a, b) <= CreaseTolerance)
+                        return true;
+                }
+            }
+            return false;
         }
 
         GameObject AddBox(string label, Vector2 along, Vector2 centreLocal, Vector2 size, bool isTrigger)
