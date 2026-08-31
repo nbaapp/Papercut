@@ -151,4 +151,4 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7a11b2c3d4e5f60718293a4b5c6d7e04, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  requiredAbility: -1
+  requiredAbility: 1
