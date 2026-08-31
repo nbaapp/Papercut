@@ -166,6 +166,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   animator: {fileID: 2003}
   run: {fileID: 11400000, guid: 8aacb55578884382b663af616e74fbbb, type: 2}
+  push: {fileID: 11400000, guid: 8d528a970de74b1e90b783fb26a3d0fb, type: 2}
   runInputThreshold: 0
   mirrorToFaceLeft: 1
 --- !u!114 &1008

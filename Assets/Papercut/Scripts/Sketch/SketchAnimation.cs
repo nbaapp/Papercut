@@ -83,10 +83,13 @@ namespace Papercut
                 return;
 
             // Step all whole frames at once: O(1) whatever the rate, and no loop that could fail to
-            // terminate when a period is smaller than float precision on Elapsed.
-            var steps = (int)(Elapsed / secondsPerFrame);
-            Elapsed = Mathf.Max(0f, Elapsed - steps * secondsPerFrame);
-            Frame = (Frame + steps % frameCount) % frameCount;
+            // terminate when a period is smaller than float precision on Elapsed. The remainder comes
+            // from IEEE '%', which is exact, so Elapsed always lands in [0, secondsPerFrame) - subtracting
+            // steps * secondsPerFrame would leave rounding noise larger than a tiny period. The whole-frame
+            // count is kept in double so an absurd delta / rate cannot overflow an int and push Frame negative.
+            var steps = Math.Floor((double)Elapsed / secondsPerFrame);
+            Elapsed %= secondsPerFrame;
+            Frame = (int)((Frame + steps % frameCount) % frameCount);
         }
     }
 }
