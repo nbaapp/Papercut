@@ -63,9 +63,9 @@ Check the task against the **Open decisions register (Bible §11)** before start
 
 Use *Sheet, Screen, Front/Back, Flap, Crease, Base, Desk, Flip* consistently in code, comments, and file names. Avoid "page," "paper," "flipside," and "tile."
 
-## 6. The coding workflow is gated
+## 6. The coding workflow is Aaron's call
 
-For any change beyond a few lines, you do not go straight from task to code. Invoke the **`coding-workflow`** skill and follow it: pre-plan questions → detailed plan → (new questions) → isolated adversarial plan review → (new questions) → code → isolated code review → fix → report. Questions are only asked when genuine (per §1), but the plan and both reviews are not optional.
+For every development task, ask Aaron whether to use the full **`coding-workflow`** skill before writing any code — do not decide this yourself in either direction. State briefly what the task involves and recommend full workflow or lightweight; wait for his answer. If yes, invoke the skill and follow it: pre-plan questions → detailed plan → (new questions) → isolated adversarial plan review → (new questions) → code → isolated code review → fix → report. If no, work lightweight — every other rule in this document still applies.
 
 ## 7. Before you report done
 

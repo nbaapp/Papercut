@@ -1,11 +1,11 @@
 ---
 name: coding-workflow
-description: The mandatory plan → adversarial plan review → code → code review pipeline for any Project Papercut change larger than a few lines. Invoke after project-context and implementation-guidelines, before writing a plan or any code. Defines when to stop and ask Aaron, the plan format, and how to dispatch the isolated plan-reviewer and code-reviewer agents.
+description: The plan → adversarial plan review → code → code review pipeline for Project Papercut. Whether to use it is Aaron's call, never Claude's — for every development task, ask Aaron first (with a recommendation) and invoke this only if he says yes. Invoke after project-context and implementation-guidelines, before writing a plan or any code. Defines when to stop and ask Aaron, the plan format, and how to dispatch the isolated plan-reviewer and code-reviewer agents.
 ---
 
 # Project Papercut — coding workflow
 
-Run this **after** `project-context` and `implementation-guidelines`. It applies to any change that is more than a few lines of code, or that adds/changes a component, prefab, scene, or asset in a way that affects behaviour. Trivial edits (a typo, a one-line fix, renaming a private field) skip it.
+Run this **after** `project-context` and `implementation-guidelines`. **Whether a task uses this workflow is Aaron's decision, not yours.** For every development task, ask Aaron up front whether to run the full workflow — describe the task's apparent size in a sentence and give a recommendation (full workflow vs. lightweight), then wait for his answer. Never invoke this skill unprompted, and never skip it on your own judgment either. If Aaron declines it for a task, all rules from `project-context` and `implementation-guidelines` (design questions go to Aaron, Inspector tunables, honest verification) still apply.
 
 The goal of the pipeline: **Aaron makes every design decision; an unbiased second pair of eyes checks both the plan and the code.** Asking is *optional* at each gate — only ask when there is a genuine question per `implementation-guidelines` §1. The plan and both reviews are *not* optional.
 
@@ -39,7 +39,7 @@ Write the plan to `Documents/Plans/<yyyy-mm-dd>-<short-slug>.md` (create the fol
 5. **Components & data** — each new/changed class or component: responsibility, public surface, serialized fields, and which are **Inspector tunables** (per `implementation-guidelines` §4a) with their defaults.
 6. **Behaviour** — step-by-step description of what happens at runtime, including edge cases and failure modes (what happens on bad input, missing references, etc.). No silent failures.
 7. **Interfaces & seams** — anything going behind an interface and why; how a future cut of this feature would be done (delete which component/prefab?).
-8. **Testing** — how correctness will be verified (Edit Mode / Play Mode tests, manual steps in the Desk scene, CLI compile check).
+8. **Testing** — how correctness will be verified: Edit Mode / Play Mode tests, the mechanical checks you will run through the Unity CLI (see *Verification*), and — separately — what Aaron needs to play to confirm feel and intent. Be explicit about which is which.
 9. **Assumptions** — every engineering assumption you are making. Design assumptions are not allowed here — those are questions for step 3.
 10. **Open questions** — anything that came up while planning. If non-empty, this is step 3.
 
@@ -71,7 +71,7 @@ If the review surfaced genuine design questions, ask Aaron (batched, with recomm
 
 Implement the plan as reviewed. If, while coding, you discover the plan is wrong in a way that changes design, **stop and ask** — don't improvise. If it's wrong in a purely engineering way, fix it and note the deviation in the plan's `## Deviations` section.
 
-Verify it compiles (use the CLI compile check from memory if the editor is open) and run whatever tests the plan's §8 called for.
+Run the *Verification* checks below and whatever else the plan's §8 called for.
 
 ## Step 7 — Code review
 
@@ -96,4 +96,25 @@ Your final reply must include:
 - every design question that was asked and its answer (or "none");
 - every engineering assumption;
 - the plan-review and code-review findings that were rejected, with reasons;
-- how it was verified (compile result, tests run, and their actual output — never claim a pass you didn't see).
+- how it was verified: compile result, tests run and their actual output, what you did in Play Mode and what you observed — never claim a pass you didn't see;
+- **what still needs Aaron to play it** — the feel/intent questions the mechanical checks cannot answer. Never present a clean CLI run as "it works"; present it as "it doesn't break, and here is what I couldn't judge".
+
+## Verification — what the Unity CLI can and cannot tell you
+
+The `unity` CLI plus the `com.unity.pipeline` package drive the **open** editor from the terminal (syntax and gotchas are in memory: `unity-cli-pipeline`). Use it for every step-6 verification; the old Roslyn compile approximation is the fallback only if the editor isn't running.
+
+Standard mechanical pass, in order:
+
+1. `recompile` → poll `recompile_status` until `up_to_date`/`completed`; the `errors[]` array must be empty.
+2. `run_tests {"mode":"editor"}` (and `"playmode"` if the plan added any). Report the Summary numbers and every failure verbatim, including pre-existing ones.
+3. If the change affects anything visible or interactive: `editor_play`, poll `editor_status` for `playing`, then `get_console_logs` (no errors/exceptions), `capture_game_view` (Read the PNG and describe what you actually see), and `eval` to read the relevant state (e.g. a component's field, a count of objects). Then `editor_stop`. Do not leave Play Mode running.
+4. For prefab/scene edits made by hand in YAML: load them through the editor (`find_assets`, `get_serialized_fields`, or `eval` with `PrefabUtility.LoadPrefabContents`) and check for missing scripts / broken references.
+
+**The limit — read this twice.** A clean pass through all four steps means the change *compiles, doesn't throw, and its state looks right in the one situation you set up*. It does **not** mean the feature works as intended. You are not playing the game: you cannot feel the drag of a fold, notice that a gate opens a beat too late, see that something reads wrong at a glance, or discover the interaction that the design implies but the plan didn't spell out. Only Aaron can do that.
+
+So:
+
+- Never write "verified working", "works as intended", or "feature complete" on the strength of CLI checks. Say what was checked and what was observed.
+- A screenshot is evidence of one frame, not of behaviour over time. Describe it literally ("Scuffy is on Sheet (0,0) left of the wall; the gate is closed") rather than interpreting it as success.
+- Treat a green run as the *entry ticket* to Aaron's playtest, not a substitute for it. The report's "what still needs Aaron to play it" list is mandatory even when everything passed.
+- If the CLI shows something *wrong* (an exception, a failing test, a state that contradicts the plan), that is real and must be fixed or reported — negative results are reliable; positive results are partial.
