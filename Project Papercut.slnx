@@ -1,4 +1,5 @@
 ﻿<Solution>
   <Project Path="Papercut.csproj" />
   <Project Path="Papercut.Tests.EditMode.csproj" />
+  <Project Path="Papercut.Editor.csproj" />
 </Solution>

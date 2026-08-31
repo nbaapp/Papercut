@@ -3,6 +3,7 @@
     "rootNamespace": "Papercut.Tests",
     "references": [
         "Papercut",
+        "Papercut.Editor",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

@@ -152,7 +152,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 2001}
-  m_Layer: 0
+  m_Layer: 6
   m_Name: Front
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -186,7 +186,7 @@ GameObject:
   - component: {fileID: 2101}
   - component: {fileID: 2102}
   - component: {fileID: 2103}
-  m_Layer: 0
+  m_Layer: 6
   m_Name: Surface
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -274,7 +274,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 3001}
-  m_Layer: 0
+  m_Layer: 7
   m_Name: Back
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -308,7 +308,7 @@ GameObject:
   - component: {fileID: 3101}
   - component: {fileID: 3102}
   - component: {fileID: 3103}
-  m_Layer: 0
+  m_Layer: 7
   m_Name: Surface
   m_TagString: Untagged
   m_Icon: {fileID: 0}
