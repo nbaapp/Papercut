@@ -19,10 +19,18 @@ namespace Papercut.EditorTools
         const float PaneGap = 4f;
         const float PaneHeaderHeight = 18f;
 
+        const float FoldListWidth = 240f;
+        const float FaceRowFraction = 0.55f;
+
         StudioPane frontPane;
         StudioPane backPane;
         StudioPalette palette;
         readonly StudioLinkState links = new();
+        StudioFoldModel foldModel;
+        StudioFoldScene foldScene;
+        StudioFoldPane foldPane;
+        StudioFoldSettings? settingsCache;
+        string foldMessage = string.Empty;
         string attachedStagePath;
         Vector2Int newSheetPosition;
 
@@ -63,6 +71,12 @@ namespace Papercut.EditorTools
             backPane = new StudioPane(SheetFace.Back);
             palette = new StudioPalette();
             palette.Refresh();
+            foldModel = new StudioFoldModel();
+            foldModel.SetGhostSize(StudioFoldSettings.ReadPlayerFootprintSize());
+            foldScene = new StudioFoldScene();
+            foldPane = new StudioFoldPane();
+            foldPane.Report = message => foldMessage = message; // One shared message slot: newest always wins.
+            foldModel.Changed += OnFoldModelChanged;
             wantsMouseMove = true;
             Undo.undoRedoPerformed += OnEditsChanged;
             EditorApplication.hierarchyChanged += OnEditsChanged;
@@ -78,11 +92,25 @@ namespace Papercut.EditorTools
             ObjectChangeEvents.changesPublished -= OnObjectsChanged;
             PrefabStage.prefabStageOpened -= OnStageChanged;
             PrefabStage.prefabStageClosing -= OnStageChanged;
+            if (foldModel != null)
+                foldModel.Changed -= OnFoldModelChanged;
+            foldScene?.Dispose();
             frontPane?.Dispose();
             backPane?.Dispose();
         }
 
-        void OnStageChanged(PrefabStage stage) => OnEditsChanged();
+        void OnFoldModelChanged()
+        {
+            foldScene?.MarkDirty();
+            Repaint();
+        }
+
+        void OnStageChanged(PrefabStage stage)
+        {
+            // The fold rig's cameras point at the (old) stage scene; rebuild lazily against the new one.
+            foldScene?.Dispose();
+            OnEditsChanged();
+        }
 
         // Property-only edits (e.g. a collider resized in the Inspector) fire neither hierarchyChanged nor a
         // repaint of an unfocused window, so overlays would go stale without the ObjectChangeEvents hook.
@@ -92,6 +120,8 @@ namespace Papercut.EditorTools
         {
             frontPane?.InvalidateOverlayCache();
             backPane?.InvalidateOverlayCache();
+            settingsCache = null; // Authored values (tints, minDepth, drag tuning) may have changed.
+            foldScene?.MarkDirty();
             Repaint();
         }
 
@@ -140,11 +170,17 @@ namespace Papercut.EditorTools
         {
             attachedStagePath = stage.assetPath;
             links.Exit(); // The old stage's source object is gone with its stage.
+            foldModel.Clear(); // Preview folds are transient editor state, per stage.
+            foldModel.SetGhostEnabled(false);
+            foldMessage = string.Empty;
+            settingsCache = null;
+            foldScene.MarkDirty();
             var changed = StudioSheetOps.NormalizeFaceLayers(sheet);
             if (changed > 0)
                 Debug.Log($"Sheet Studio: moved {changed} face-content object(s) of '{sheet.name}' onto the SheetFront/SheetBack layers (one-time; runtime forces the same layers at Awake).");
             frontPane.FrameSheet();
             backPane.FrameSheet();
+            foldPane.FrameSheet();
             palette.Refresh();
         }
 
@@ -217,6 +253,7 @@ namespace Papercut.EditorTools
                 {
                     frontPane.FrameSheet();
                     backPane.FrameSheet();
+                    foldPane.FrameSheet();
                 }
                 GUILayout.FlexibleSpace();
                 GUILayout.Label(links.Active
@@ -258,19 +295,98 @@ namespace Papercut.EditorTools
         void DrawPanes(PrefabStage stage, Sheet sheet)
         {
             var top = ToolbarHeight + ArtRowHeight + PaneHeaderHeight + 4f;
-            var height = position.height - top - PaletteHeight - PaneGap;
+            var totalHeight = position.height - top - PaletteHeight - PaneGap;
             var width = (position.width - PaneGap) * 0.5f;
-            if (height <= 20f || width <= 20f)
+            if (totalHeight <= 60f || width <= 20f)
                 return;
 
-            var frontRect = new Rect(0f, top, width, height);
-            var backRect = new Rect(width + PaneGap, top, width, height);
+            // Second-row layout (Aaron, 2026-08-31): faces on top, the fold preview in a wide row below.
+            var faceHeight = totalHeight * FaceRowFraction - PaneHeaderHeight;
+            var foldTop = top + faceHeight + PaneGap + PaneHeaderHeight;
+            var foldHeight = position.height - foldTop - PaletteHeight - PaneGap;
+
+            var frontRect = new Rect(0f, top, width, faceHeight);
+            var backRect = new Rect(width + PaneGap, top, width, faceHeight);
             GUI.Label(new Rect(frontRect.x, top - PaneHeaderHeight, width, PaneHeaderHeight), "Front", EditorStyles.boldLabel);
             GUI.Label(new Rect(backRect.x, top - PaneHeaderHeight, width, PaneHeaderHeight),
                 MirrorBackPane ? "Back (mirrored display — aligned with Front)" : "Back (authored Back-space)", EditorStyles.boldLabel);
 
             frontPane.Draw(frontRect, ContextFor(stage, sheet, SheetFace.Front));
             backPane.Draw(backRect, ContextFor(stage, sheet, SheetFace.Back));
+
+            if (foldHeight <= 40f)
+                return;
+            var foldRect = new Rect(0f, foldTop, position.width - FoldListWidth - PaneGap, foldHeight);
+            var listRect = new Rect(foldRect.xMax + PaneGap, foldTop, FoldListWidth, foldHeight);
+            GUI.Label(new Rect(0f, foldTop - PaneHeaderHeight, foldRect.width, PaneHeaderHeight),
+                "Fold preview (editor-only — folds are never saved)", EditorStyles.boldLabel);
+
+            settingsCache ??= StudioFoldSettings.Read(sheet);
+            foldModel.RememberCreasesEnabled = settingsCache.Value.RememberCreases;
+            foldPane.Draw(foldRect, new StudioFoldPane.Context
+            {
+                Stage = stage,
+                Model = foldModel,
+                Scene = foldScene,
+                Settings = settingsCache.Value,
+            });
+            DrawFoldList(listRect);
+        }
+
+        void DrawFoldList(Rect rect)
+        {
+            GUILayout.BeginArea(rect);
+            EditorGUILayout.LabelField("Folds", EditorStyles.boldLabel);
+            var minDepth = settingsCache?.MinDepth ?? 0.25f;
+            for (int i = 0; i < foldModel.Folds.Count; i++)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    var fold = foldModel.Folds[i];
+                    var pinned = foldModel.IsPinned(i);
+                    GUILayout.Label($"{i + 1}. {fold.Anchor}{(pinned ? " (pinned)" : "")}", GUILayout.Width(130f));
+                    var newDepth = EditorGUILayout.DelayedFloatField(fold.Depth, GUILayout.Width(50f));
+                    if (!Mathf.Approximately(newDepth, fold.Depth))
+                    {
+                        // A success clears any stale refusal (and reports a ghost relocation); a refusal explains itself.
+                        foldMessage = foldModel.TrySetDepth(i, newDepth, minDepth, out var depthReason)
+                            ? (foldModel.GhostWasRelocated ? "Ghost moved to stay on the Sheet." : string.Empty)
+                            : depthReason;
+                    }
+                    if (GUILayout.Button("✕", GUILayout.Width(22f)))
+                    {
+                        foldMessage = foldModel.TryRemoveAt(i, out var removeReason)
+                            ? (foldModel.GhostWasRelocated ? "Ghost moved to stay on the Sheet." : string.Empty)
+                            : removeReason;
+                        if (removeReason == null)
+                            break; // The list changed under this loop; redraw next frame.
+                    }
+                }
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("Unfold all"))
+                {
+                    foldModel.Clear();
+                    foldMessage = string.Empty;
+                }
+                var ghostOn = GUILayout.Toggle(foldModel.Ghost.HasValue, "Test player", GUI.skin.button);
+                if (ghostOn != foldModel.Ghost.HasValue)
+                    foldModel.SetGhostEnabled(ghostOn);
+            }
+            if (!string.IsNullOrEmpty(foldMessage))
+                EditorGUILayout.HelpBox(foldMessage, MessageType.Info);
+            if (!string.IsNullOrEmpty(settingsCache?.MissingNote))
+                EditorGUILayout.HelpBox(settingsCache.Value.MissingNote, MessageType.Warning);
+            GUILayout.FlexibleSpace();
+            var note = foldModel.Ghost.HasValue
+                ? "Player rule live via the test ghost."
+                : "Player rule OFF (no test ghost).";
+            EditorGUILayout.LabelField(
+                note + " Preview ignores the multiple-fold/stacking toggles. Emptied regions show an editor "
+                + "background, not the Desk. Objects don't move or clip in preview — that's Play Mode's job.",
+                EditorStyles.wordWrappedMiniLabel);
+            GUILayout.EndArea();
         }
 
         StudioPane.Context ContextFor(PrefabStage stage, Sheet sheet, SheetFace face) => new()
@@ -301,6 +417,14 @@ namespace Papercut.EditorTools
 
             if (e.keyCode == KeyCode.Escape)
             {
+                // An active fold/ghost drag claims Escape before anything else (plan round-2 B1) —
+                // the cancel half of the game's input scheme must reach the fold pane.
+                if (foldPane != null && foldPane.IsDragging)
+                {
+                    foldPane.CancelDrag(foldModel);
+                    e.Use();
+                    return;
+                }
                 // First Escape disarms the link source, the second leaves link mode; outside link mode it disarms the palette.
                 if (links.Active)
                 {
@@ -326,6 +450,7 @@ namespace Papercut.EditorTools
             {
                 frontPane.FrameSheet();
                 backPane.FrameSheet();
+                foldPane.FrameSheet();
                 e.Use();
                 return;
             }
