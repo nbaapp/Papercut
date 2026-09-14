@@ -74,6 +74,7 @@ namespace Papercut.EditorTools
             }
             property.objectReferenceValue = target;
             serialized.ApplyModifiedProperties();
+            StudioEdits.Edited(slot.Effect.gameObject);
         }
     }
 

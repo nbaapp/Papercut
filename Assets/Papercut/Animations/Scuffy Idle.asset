@@ -16,4 +16,5 @@ MonoBehaviour:
   - {fileID: 21300000, guid: 7c916a2a13814594791e4a569881956b, type: 3}
   - {fileID: 21300000, guid: 8b12dc5e53258f942933447cfd69d282, type: 3}
   - {fileID: 21300000, guid: 68bce90eeac10aa4d85855925b481013, type: 3}
-  framesPerSecond: 4
+  syncToClock: 1
+  framesPerSecond: 3

@@ -283,7 +283,7 @@ namespace Papercut.EditorTools
         /// <summary>
         /// The nearest centre (to <paramref name="point"/>) at which the whole ghost rect fits on the sheet's
         /// current footprint (Aaron, 2026-08-31: the in-game player's whole collider is stopped by boundary
-        /// walls, so the stand-in must fit entirely on paper). Each footprint polygon is eroded by the ghost's
+        /// walls, so the stand-in must fit entirely on the Sheet). Each footprint polygon is eroded by the ghost's
         /// half-size (exact for a convex polygon: every edge's half-plane shifted inward by the rect's support
         /// distance); the nearest point in any eroded polygon wins. Per-polygon erosion is conservative — a
         /// spot straddling two footprint pieces may be refused — erring on the faithful side. If the ghost

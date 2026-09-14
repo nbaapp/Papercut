@@ -17,9 +17,9 @@ namespace Papercut
     {
         /// <summary>
         /// The object's footprint in face-local space (Front-space under Front, Back-space under Back) —
-        /// see <see cref="FoldFootprint.FaceLocalRect"/>.
+        /// see <see cref="FoldFootprint"/>. Empty when the object occupies nothing (e.g. an invalid region).
         /// </summary>
-        Rect FaceLocalFootprint(Transform faceRoot);
+        FaceFootprint FaceLocalFootprint(Transform faceRoot);
 
         /// <summary>
         /// Called by <see cref="SheetOcclusion"/> whenever the committed folds change, the sheet becomes or stops

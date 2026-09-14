@@ -35,5 +35,8 @@ namespace Papercut
 
         /// <summary>The Front-space rect under a Back-space rect (its mirror in x); the same map the other way.</summary>
         public static Rect BackToFront(Rect back) => Rect.MinMaxRect(-back.xMax, back.yMin, -back.xMin, back.yMax);
+
+        /// <summary>The Front-space polygon under a Back-space polygon (its mirror in x); the same map the other way.</summary>
+        public static ConvexPolygon BackToFront(ConvexPolygon back) => back.MirroredX();
     }
 }

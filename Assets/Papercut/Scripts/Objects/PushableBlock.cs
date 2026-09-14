@@ -23,6 +23,14 @@ namespace Papercut
     /// centre; the block must sit unrotated and unscaled under a face root that is at identity - asserted).
     /// The drawing is a mesh on the Default layer, clipped to the visible pieces and placed at each piece's
     /// surface depth (<see cref="IFoldRenderer.SurfaceZ"/>), so a Flap that lands on part of it draws over that part.
+    /// The picture on that mesh is the current frame of a <see cref="SketchAnimator"/> on a child (the hand-drawn
+    /// line boil): the child's own SpriteRenderer shows the block in the editor and is switched off in play; the
+    /// frame is mapped at its own scale with its pivot at the block's centre (<see cref="SpriteMapping"/>), so the
+    /// parts of the frame outside the block's rect are cut - author the rect to the drawing. The drawing is painted
+    /// with the paper (<see cref="DrawingUv"/>): laid out in the space of the face the block is on, so a Back-side
+    /// block reads exactly as every other Back content does, and a block that climbs a Flap is carried by the Flap's
+    /// reflection like the sheet under it (upright on an East/West Flap, upside-down on a North/South one, turned on
+    /// a corner one).
     /// </remarks>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(Rigidbody2D), typeof(BoxCollider2D), typeof(PolygonCollider2D))]
@@ -49,11 +57,13 @@ namespace Papercut
         [SerializeField, Tooltip("Child that draws the block, clipped to the parts of it that are visible; posed by the block. Needs a MeshRenderer.")]
         MeshFilter visual;
 
-        [SerializeField, Tooltip("URP/Unlit transparent material. Its _BaseMap is replaced by Texture and its _BaseColor by Tint at runtime.")]
+        [SerializeField, Tooltip("URP/Unlit transparent material. Its _BaseMap is replaced by the drawing's current frame and its _BaseColor by Tint at runtime.")]
         Material material;
 
-        [SerializeField, Tooltip("The block's drawing, stretched over its flat rect.")]
-        Texture texture;
+        [SerializeField, Tooltip("The block's drawing: a SketchAnimator on a direct child at the block's centre whose SpriteRenderer shows " +
+            "the block in the editor. In play that renderer is switched off and the frame it shows is drawn on the clipped mesh instead, " +
+            "at the frame's own scale, with its pivot at the block's centre.")]
+        SketchAnimator drawing;
 
         [SerializeField, Tooltip("Tint of the drawing.")]
         Color tint = Color.white;
@@ -71,6 +81,10 @@ namespace Papercut
         BoxCollider2D authored;
         PolygonCollider2D shape;
         MaterialPropertyBlock block;
+        SpriteRenderer drawingRenderer;
+        /// <summary>The frame the mesh was last drawn with; a new frame from the animator triggers a redraw.</summary>
+        Sprite shownSprite;
+        bool reportedNoSprite;
         /// <summary>One mesh per surface layer the block is drawn on (URP sorts renderers by their bounds' depth, so pieces at different depths need separate renderers). [0] is the assigned Visual.</summary>
         readonly List<(MeshFilter filter, MeshRenderer renderer)> parts = new();
         readonly List<int> surfaces = new();
@@ -142,7 +156,22 @@ namespace Papercut
             }
             if (visual == null) { Debug.LogError($"PushableBlock '{name}' has no Visual assigned.", this); ok = false; }
             else if (!visual.TryGetComponent(out MeshRenderer _)) { Debug.LogError($"PushableBlock '{name}': the Visual has no MeshRenderer.", this); ok = false; }
-            if (material == null || texture == null) { Debug.LogError($"PushableBlock '{name}' needs a material and a texture.", this); ok = false; }
+            if (material == null) { Debug.LogError($"PushableBlock '{name}' needs a material.", this); ok = false; }
+            if (drawing == null) { Debug.LogError($"PushableBlock '{name}' has no Drawing assigned.", this); ok = false; }
+            else
+            {
+                // SketchAnimator requires a SpriteRenderer, so this cannot be null. Never shown in play, whatever else is
+                // wrong: the face camera would render it as Sheet content at the authored place.
+                drawingRenderer = drawing.GetComponent<SpriteRenderer>();
+                drawingRenderer.enabled = false;
+                var drawingTransform = drawing.transform;
+                var offset = (Vector2)drawingTransform.localPosition;
+                if (drawingTransform.parent != transform || offset != Vector2.zero || drawingTransform.localRotation != Quaternion.identity || drawingTransform.localScale != Vector3.one)
+                {
+                    Debug.LogError($"PushableBlock '{name}': the Drawing '{drawing.name}' must be a direct child of the block at its centre (x/y 0), unrotated and unscaled; the frame's pivot is drawn at the block's centre.", this);
+                    ok = false;
+                }
+            }
             if (authored.isTrigger) { Debug.LogError($"PushableBlock '{name}': the authoring BoxCollider2D must not be a trigger. Fixing at runtime; please fix the asset.", this); authored.isTrigger = false; }
 
             if (!ok)
@@ -249,6 +278,13 @@ namespace Papercut
                 body.interpolation = want;
         }
 
+        void LateUpdate()
+        {
+            // The animator changes frames in its Update, which runs after this component's (execution order -5).
+            if (ok && drawingRenderer.sprite != shownSprite)
+                Redraw();
+        }
+
         void OnDestroy()
         {
             for (int i = 0; i < parts.Count; i++)
@@ -264,7 +300,8 @@ namespace Papercut
         // ----- IFoldOccludee -----
 
         /// <summary>The block's current flat rect in the authored face's space (the block may since have changed side; see <see cref="OnFoldCoverageChanged"/>).</summary>
-        public Rect FaceLocalFootprint(Transform faceRoot) => authoredFace == SheetFace.Front ? flatRect : SheetGeometry.BackToFront(flatRect);
+        public FaceFootprint FaceLocalFootprint(Transform faceRoot)
+            => FaceFootprint.FromRect(authoredFace == SheetFace.Front ? flatRect : SheetGeometry.BackToFront(flatRect));
 
         /// <summary>
         /// The block places itself from the sheet's layers rather than from <paramref name="coverage"/>, which is
@@ -292,9 +329,9 @@ namespace Papercut
 
         // ----- IArrivalObstacle -----
 
-        public bool TryGetSolidFootprint(PlayerAbilities player, out Rect sheetLocal)
+        public bool TryGetSolidFootprint(PlayerAbilities player, out FaceFootprint sheetLocal)
         {
-            sheetLocal = flatRect;
+            sheetLocal = FaceFootprint.FromRect(flatRect);
             return ok && isActiveAndEnabled && side == SheetFace.Front; // Asked only while the sheet is flat.
         }
 
@@ -502,7 +539,7 @@ namespace Papercut
         /// Draws the block as it lies on the sheet <em>as displayed</em> (<see cref="SheetFolds.DisplayLayers"/>): during a
         /// drag the block follows the previewed Flap; during an unfold it swings back with it. Physics uses the committed
         /// layers, so the mesh is built relative to the body's committed place. One mesh per surface layer at that
-        /// surface's depth, textured by flat coordinates.
+        /// surface's depth, textured by flat coordinates through the current frame (see the class remarks).
         /// </summary>
         void DrawVisual()
         {
@@ -520,9 +557,23 @@ namespace Papercut
                 if (!surfaces.Contains(piece.SurfaceLayer))
                     surfaces.Add(piece.SurfaceLayer);
             }
-            var uvRect = flatRect;
+            var sprite = drawingRenderer.sprite;
+            shownSprite = sprite;
+            if (sprite == null)
+            {
+                if (!reportedNoSprite)
+                {
+                    reportedNoSprite = true;
+                    Debug.LogError($"PushableBlock '{name}': its Drawing '{drawing.name}' shows no sprite (is the SketchAnimator's idle assigned?); the block is invisible.", this);
+                }
+                foreach (var part in parts)
+                    part.renderer.enabled = false;
+                return;
+            }
+            var frame = SpriteFrame.Of(sprite);
+            var drawnSide = side;
             block.Clear();
-            block.SetTexture(BaseMap, texture);
+            block.SetTexture(BaseMap, sprite.texture);
             block.SetColor(BaseColor, tint);
             for (int s = 0; s < surfaces.Count; s++)
             {
@@ -534,11 +585,7 @@ namespace Papercut
                     if (piece.SurfaceLayer != surface)
                         continue;
                     var inverse = stack.Layers[piece.LayerIndex].ToDesk.Inverse;
-                    builder.AddPolygon(piece.Desk, v =>
-                    {
-                        var flat = inverse.Apply(v);
-                        return new Vector2((flat.x - uvRect.xMin) / uvRect.width, (flat.y - uvRect.yMin) / uvRect.height);
-                    }, z, origin);
+                    builder.AddPolygon(piece.Desk, v => DrawingUv(frame, flatRect, drawnSide, inverse.Apply(v)), z, origin);
                 }
                 var part = Part(s);
                 builder.Apply(part.filter.sharedMesh);
@@ -547,6 +594,19 @@ namespace Papercut
             }
             for (int s = surfaces.Count; s < parts.Count; s++)
                 parts[s].renderer.enabled = false;
+        }
+
+        /// <summary>
+        /// Where a flat-sheet point of the block lands on its drawing frame: the frame's pivot sits at the block's
+        /// centre in the space of the face the block is on, so a Back-side block is laid out in Back-space (Bible
+        /// §6: Back content is authored in Back-space and the fold system mirrors it) exactly like a Back sprite,
+        /// and the layer's transform then carries it with the paper. Pure.
+        /// </summary>
+        public static Vector2 DrawingUv(in SpriteFrame frame, Rect flatRect, SheetFace side, Vector2 flat)
+        {
+            var back = side == SheetFace.Back;
+            var anchor = back ? SheetGeometry.BackToFront(flatRect.center) : flatRect.center;
+            return SpriteMapping.Uv(frame, anchor, back ? SheetGeometry.BackToFront(flat) : flat);
         }
 
         Vector2 WorldCentre()

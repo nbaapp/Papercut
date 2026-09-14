@@ -15,4 +15,5 @@ MonoBehaviour:
   frames:
   - {fileID: 21300000, guid: 8bf79b72511d5f246afc9490b79d2f3a, type: 3}
   - {fileID: 21300000, guid: 2f383c7a78b19c14691b7a01a81d76bb, type: 3}
+  syncToClock: 0
   framesPerSecond: 6

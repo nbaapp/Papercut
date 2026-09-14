@@ -30,7 +30,7 @@ namespace Papercut
         const float LayerZStep = 0.01f;
         /// <summary>Local z of the Seam overlay: in front of every layer that fits below <see cref="BaseZ"/>.</summary>
         const float SeamZ = 0.005f;
-        /// <summary>Face-local z of crease lines: in front of every authored face element (surface at 0, terrain sprites at -0.05).</summary>
+        /// <summary>Face-local z of crease lines: in front of every authored face element (surface at 0, art at -0.01, terrain fills at -0.05).</summary>
         const float FaceCreaseZ = -0.1f;
         const float CameraDistance = 5f;
         const float CameraDepth = -100f;

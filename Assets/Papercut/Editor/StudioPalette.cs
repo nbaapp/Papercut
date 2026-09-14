@@ -7,7 +7,8 @@ namespace Papercut.EditorTools
     /// <summary>
     /// The Sheet Studio's element palette: the placeable prefabs, discovered from the element folders.
     /// Whatever is in those folders is placeable — curation is moving a prefab out, so cutting a
-    /// [TENTATIVE] element (Bible §9) automatically removes it here.
+    /// [TENTATIVE] element (Bible §9) automatically removes it here. Props (Aaron, 2026-09-10) are art-only
+    /// scenery with no collision of their own — the Tree — whose collision is laid over them as Wall regions.
     /// </summary>
     public sealed class StudioPalette
     {
@@ -15,6 +16,7 @@ namespace Papercut.EditorTools
         {
             "Assets/Papercut/Prefabs/Terrain",
             "Assets/Papercut/Prefabs/Objects",
+            "Assets/Papercut/Prefabs/Props",
         };
 
         readonly List<GameObject> prefabs = new();
@@ -44,6 +46,9 @@ namespace Papercut.EditorTools
         }
 
         public void Disarm() => Armed = null;
+
+        /// <summary>Test seam: arm a prefab without going through the strip UI.</summary>
+        internal void Arm(GameObject prefab) => Armed = prefab;
 
         /// <summary>Draws the palette strip; clicking a button arms that prefab (clicking it again disarms).</summary>
         public void Draw(Rect rect)

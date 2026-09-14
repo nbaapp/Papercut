@@ -9,7 +9,7 @@ namespace Papercut
     /// </summary>
     public interface IArrivalObstacle
     {
-        /// <summary>True with the sheet-local rect this object blocks for <paramref name="player"/>; false if it does not block them.</summary>
-        bool TryGetSolidFootprint(PlayerAbilities player, out Rect sheetLocal);
+        /// <summary>True with the sheet-local footprint this object blocks for <paramref name="player"/>; false if it does not block them.</summary>
+        bool TryGetSolidFootprint(PlayerAbilities player, out FaceFootprint sheetLocal);
     }
 }

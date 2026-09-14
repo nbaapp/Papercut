@@ -17,11 +17,19 @@ namespace Papercut
         [SerializeField, Tooltip("Hand-drawn frames, in loop order. Two or more give the sketch wobble; one is a static drawing.")]
         Sprite[] frames = Array.Empty<Sprite>();
 
-        [SerializeField, Min(0f), Tooltip("How fast the drawing cycles through its frames. 0 holds the first frame.")]
+        [SerializeField, Tooltip("Follow the Desk's SketchClock so this drawing flips in step with every other synced drawing - the whole " +
+            "page boils at once. Off: this animation runs on its own Frames Per Second from a random start.")]
+        bool syncToClock = true;
+
+        [SerializeField, Min(0f), Tooltip("How fast the drawing cycles through its frames when it is not synced to the clock. 0 holds the first frame.")]
         float framesPerSecond = 6f;
 
         public int FrameCount => frames.Length;
 
+        /// <summary>True: the frame comes from the Desk's <see cref="SketchClock"/> beat. False: from <see cref="FramesPerSecond"/>.</summary>
+        public bool SyncToClock => syncToClock;
+
+        /// <summary>The animation's own rate, used only when it is not synced to the clock.</summary>
         public float FramesPerSecond => framesPerSecond;
 
         /// <summary>True when there is at least one frame and every frame slot is filled.</summary>

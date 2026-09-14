@@ -41,9 +41,12 @@ namespace Papercut
 
         public bool IsNone => VisibleParts.Count == 0;
 
-        /// <summary>The whole footprint is present, unmoved (Front content on the Base).</summary>
-        public static CoverageResult Whole(FoldCoverage coverage, Rect footprint)
-            => new(coverage, new[] { ConvexPolygon.FromRect(footprint) }, true);
+        /// <summary>
+        /// The whole footprint is present, unmoved (Front content on the Base). An empty footprint has nothing
+        /// to present and is <see cref="None"/>.
+        /// </summary>
+        public static CoverageResult Whole(FoldCoverage coverage, FaceFootprint footprint)
+            => footprint.IsEmpty ? None(coverage) : new(coverage, footprint.Pieces, true);
 
         /// <summary>Nothing of the footprint is present.</summary>
         public static CoverageResult None(FoldCoverage coverage) => new(coverage, NoParts, false);

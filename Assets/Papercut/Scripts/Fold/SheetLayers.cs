@@ -192,51 +192,61 @@ namespace Papercut
         /// in the face's authored space (Front-space or Back-space).
         /// </summary>
         public CoverageResult Coverage(Rect faceFootprint, SheetFace face)
+            => Coverage(FaceFootprint.FromRect(faceFootprint), face);
+
+        /// <summary>
+        /// <see cref="Coverage(Rect, SheetFace)"/> for a footprint of several convex pieces (a polygon region):
+        /// each piece is clipped on its own and the parts are pooled. Whole means every piece is present in one
+        /// part on the Base, unmoved.
+        /// </summary>
+        public CoverageResult Coverage(FaceFootprint footprint, SheetFace face)
         {
-            if (faceFootprint.width <= 0f || faceFootprint.height <= 0f)
+            if (footprint.IsEmpty)
                 return CoverageResult.None(FoldCoverage.Uncovered);
 
-            var frontSpace = face == SheetFace.Front
-                ? faceFootprint
-                : SheetGeometry.BackToFront(faceFootprint);
-            var query = ConvexPolygon.FromRect(frontSpace);
             var wantFrontUp = face == SheetFace.Front;
-
             var parts = new List<ConvexPolygon>();
-            var singleBasePart = false;
-            for (int i = 0; i < layers.Count; i++)
+            var everyPieceWholeOnBase = true;
+            foreach (var authored in footprint.Pieces)
             {
-                var layer = layers[i];
-                if (layer.FrontUp != wantFrontUp)
-                    continue;
-                var piece = query.Intersect(layer.Original);
-                if (piece.IsEmpty)
-                    continue;
-                var pieces = new List<ConvexPolygon> { piece.Transform(layer.ToDesk) };
-                for (int j = i + 1; j < layers.Count && pieces.Count > 0; j++)
+                var query = face == SheetFace.Front ? authored : SheetGeometry.BackToFront(authored);
+                var partsBefore = parts.Count;
+                var fromBase = false;
+                for (int i = 0; i < layers.Count; i++)
                 {
-                    var above = layers[j].Desk;
-                    var remaining = new List<ConvexPolygon>();
-                    foreach (var p in pieces)
-                        remaining.AddRange(p.Subtract(above));
-                    pieces = remaining;
+                    var layer = layers[i];
+                    if (layer.FrontUp != wantFrontUp)
+                        continue;
+                    var piece = query.Intersect(layer.Original);
+                    if (piece.IsEmpty)
+                        continue;
+                    var pieces = new List<ConvexPolygon> { piece.Transform(layer.ToDesk) };
+                    for (int j = i + 1; j < layers.Count && pieces.Count > 0; j++)
+                    {
+                        var above = layers[j].Desk;
+                        var remaining = new List<ConvexPolygon>();
+                        foreach (var p in pieces)
+                            remaining.AddRange(p.Subtract(above));
+                        pieces = remaining;
+                    }
+                    if (pieces.Count == 0)
+                        continue;
+                    fromBase = parts.Count == partsBefore && pieces.Count == 1 && layer.IsBase;
+                    parts.AddRange(pieces);
                 }
-                if (pieces.Count == 0)
-                    continue;
-                singleBasePart = parts.Count == 0 && pieces.Count == 1 && layer.IsBase;
-                parts.AddRange(pieces);
+                if (parts.Count != partsBefore + 1 || !fromBase)
+                    everyPieceWholeOnBase = false;
             }
 
-            var area = faceFootprint.width * faceFootprint.height;
             if (parts.Count == 0)
                 return CoverageResult.None(face == SheetFace.Front ? FoldCoverage.Covered : FoldCoverage.Uncovered);
 
             var total = 0f;
             foreach (var p in parts)
                 total += p.Area;
-            var whole = total >= area - ContainmentTolerance;
-            if (whole && singleBasePart && parts.Count == 1)
-                return CoverageResult.Whole(FoldCoverage.Uncovered, faceFootprint);
+            var whole = total >= footprint.Area - ContainmentTolerance;
+            if (whole && everyPieceWholeOnBase)
+                return CoverageResult.Whole(FoldCoverage.Uncovered, footprint);
             var coverage = whole ? (face == SheetFace.Front ? FoldCoverage.Uncovered : FoldCoverage.Covered) : FoldCoverage.Partial;
             return CoverageResult.Clipped(parts, coverage);
         }

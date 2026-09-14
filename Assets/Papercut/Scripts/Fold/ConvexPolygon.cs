@@ -176,6 +176,24 @@ namespace Papercut
             return new ConvexPolygon(result);
         }
 
+        /// <summary>This polygon moved by <paramref name="offset"/>.</summary>
+        public ConvexPolygon Translated(Vector2 offset)
+        {
+            var result = new List<Vector2>(vertices.Count);
+            foreach (var v in vertices)
+                result.Add(v + offset);
+            return new ConvexPolygon(result);
+        }
+
+        /// <summary>This polygon mirrored in x (x ↦ −x). Reverses winding; still convex.</summary>
+        public ConvexPolygon MirroredX()
+        {
+            var result = new List<Vector2>(vertices.Count);
+            foreach (var v in vertices)
+                result.Add(new Vector2(-v.x, v.y));
+            return new ConvexPolygon(result);
+        }
+
         /// <summary>True if this polygon and <paramref name="rect"/> share any area.</summary>
         public bool Overlaps(Rect rect) => !ClipToRect(rect).IsEmpty;
 

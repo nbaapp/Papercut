@@ -57,19 +57,21 @@ namespace Papercut
         }
 
         /// <summary>
-        /// World-space rects of this sheet's active Front content the player cannot pass (<see cref="IArrivalObstacle"/>),
-        /// for the room test of a transition onto it. The sheet is flat when it is not the Screen, so sheet-local
-        /// and world differ only by the sheet's position.
+        /// World-space convex pieces of this sheet's active Front content the player cannot pass
+        /// (<see cref="IArrivalObstacle"/>), for the room test of a transition onto it. The sheet is flat when
+        /// it is not the Screen, so sheet-local and world differ only by the sheet's position.
         /// </summary>
-        public IEnumerable<Rect> SolidFootprints(PlayerAbilities player)
+        public IEnumerable<ConvexPolygon> SolidFootprints(PlayerAbilities player)
         {
             if (sheet.Front == null)
                 yield break;
             var centre = sheet.Centre;
             foreach (var obstacle in sheet.Front.GetComponentsInChildren<IArrivalObstacle>(false))
             {
-                if (obstacle.TryGetSolidFootprint(player, out var local))
-                    yield return new Rect(local.position + centre, local.size);
+                if (!obstacle.TryGetSolidFootprint(player, out var local))
+                    continue;
+                foreach (var piece in local.Pieces)
+                    yield return piece.Translated(centre);
             }
         }
 

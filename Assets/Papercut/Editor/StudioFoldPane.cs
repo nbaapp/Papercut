@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -178,16 +179,39 @@ namespace Papercut.EditorTools
             public StudioFoldModel Model;
             public StudioFoldScene Scene;
             public StudioFoldSettings Settings;
+            public Sheet Sheet;
+            public StudioPalette Palette;
+            public float SnapIncrement;
+            /// <summary>Link mode is face-pane-only (Aaron, 2026-08-31): the element branch goes inert.</summary>
+            public bool LinksActive;
+        }
+
+        /// <summary>What a press did — the priority chain (Aaron: fold gestures before elements) made testable.</summary>
+        internal enum PressOutcome
+        {
+            Nothing,
+            Placed,
+            PlaceRefusedNoSheet,
+            /// <summary>Polygon terrain is drawn in a face pane, never dropped as its prefab's default shape.</summary>
+            PlaceRefusedPolygonTerrain,
+            GhostDragStarted,
+            Unfolded,
+            UnfoldRefused,
+            FoldDragStarted,
+            ElementDragStarted,
+            ElementInertLinkMode,
         }
 
         const float MinZoom = 4f;
         const float MaxZoom = 400f;
         const float ZoomStep = 0.05f;
         static readonly Color GhostFill = new(0.3f, 0.6f, 1f, 0.25f);
+        static readonly Color SelectionColorFold = new(1f, 0.9f, 0.2f, 1f);
+        static readonly Color PlaceGhostColor = new(0.3f, 1f, 0.4f, 0.7f);
         static readonly Color GhostOutline = new(0.3f, 0.6f, 1f, 1f);
         static readonly Color SheetOutlineColor = new(1f, 1f, 1f, 0.5f);
 
-        enum DragKind { None, Fold, Ghost }
+        enum DragKind { None, Fold, Ghost, Element }
 
         PaneView view;
         bool framed;
@@ -196,6 +220,15 @@ namespace Papercut.EditorTools
         float dragGrabDepth;
         Fold dragFold;
         Vector2 ghostGrabOffset;
+        GameObject dragElement;
+        Vector2 elementGrabOffsetDesk; // Desk-space (plan round-1 N4): authored-space offsets mirror across flaps.
+        int elementUndoGroup;
+        int controlId; // This pane's IMGUI control, allocated per draw; held as hotControl for an element drag (see StudioPane.BeginEditDrag).
+        readonly List<StudioFoldMapping.DeskPiece> scratchPieces = new();
+        readonly List<ConvexPolygon> scratchAuthored = new();
+
+        /// <summary>Shown when polygon terrain is armed over the fold pane: it is drawn point by point in a face pane.</summary>
+        public const string PolygonTerrainHint = "Draw polygon terrain in a face pane.";
 
         /// <summary>
         /// Where the pane reports what it has to say (refusals, relocations). The window points this at its
@@ -206,16 +239,34 @@ namespace Papercut.EditorTools
 
         public bool IsDragging => drag != DragKind.None;
 
+        /// <summary>Test seam: the desk-space grab offset of the active element drag (M1 regression coverage).</summary>
+        internal Vector2 ElementGrabOffsetDesk => elementGrabOffsetDesk;
+
         public PaneView View => view;
 
         public void FrameSheet() => framed = false;
 
-        /// <summary>Cancels an active fold or ghost drag (Escape). The window routes Escape here first.</summary>
+        /// <summary>
+        /// Cancels an active drag (Escape/right-click/middle-press; the window routes Escape here first).
+        /// A fold drag drops its preview; an element drag reverts the whole gesture (plan round-2 N1 —
+        /// Escape means "as if I never dragged" everywhere in this pane); a ghost drag just ends (moves
+        /// commit live).
+        /// </summary>
         public void CancelDrag(StudioFoldModel model)
         {
             if (drag == DragKind.Fold)
                 model?.SetPreview(null);
+            else if (drag == DragKind.Element)
+                Undo.RevertAllDownToGroup(elementUndoGroup);
             drag = DragKind.None;
+            dragElement = null;
+            ReleaseHotControl();
+        }
+
+        void ReleaseHotControl()
+        {
+            if (GUIUtility.hotControl == controlId)
+                GUIUtility.hotControl = 0;
         }
 
         public void Draw(Rect rect, in Context ctx)
@@ -226,6 +277,7 @@ namespace Papercut.EditorTools
                 view = view.WithRect(rect);
             framed = true;
 
+            controlId = GUIUtility.GetControlID(FocusType.Passive, rect);
             HandleInput(rect, ctx);
 
             if (Event.current.type != EventType.Repaint)
@@ -291,6 +343,103 @@ namespace Papercut.EditorTools
                     new Vector2(ghost.xMin, ghost.yMin), new Vector2(ghost.xMax, ghost.yMin),
                     new Vector2(ghost.xMax, ghost.yMax), new Vector2(ghost.xMin, ghost.yMax));
             }
+
+            DrawSelectionThroughFold(ctx);
+            DrawPlacementGhost(ctx);
+        }
+
+        /// <summary>
+        /// The selected element's footprint mapped through the fold: face-up pieces in the selection colour,
+        /// face-down pieces dimmed (Aaron, 2026-08-31: mark hidden pieces so the whole extent reads).
+        /// </summary>
+        void DrawSelectionThroughFold(in Context ctx)
+        {
+            if (ctx.Sheet == null)
+                return;
+            var (element, face, root) = SelectedElement(ctx);
+            if (element == null)
+                return;
+
+            // The element's true shape (a polygon region's pieces, a prop's sprite rect), not its bounding rect.
+            StudioPlacement.AuthoredFootprintPieces(element, root, scratchAuthored);
+            if (scratchAuthored.Count == 0)
+                return;
+            // DisplayLayers, not Layers: during a fold drag the composite under the highlight includes the
+            // previewed fold, and the highlight must agree with the pixels beneath it (code review S5).
+            StudioFoldMapping.AuthoredPiecesToDeskPieces(ctx.Model.DisplayLayers, face, scratchAuthored, scratchPieces);
+            var dimmed = new Color(SelectionColorFold.r, SelectionColorFold.g, SelectionColorFold.b, 0.35f);
+            foreach (var piece in scratchPieces)
+                DrawPolygon(piece.FaceUp ? SelectionColorFold : dimmed, piece.FaceUp ? 3f : 2f, piece.Piece);
+        }
+
+        /// <summary>
+        /// The armed prefab's footprint under the cursor, mapped through the fold, with the target face named;
+        /// red over empty desk.
+        /// </summary>
+        void DrawPlacementGhost(in Context ctx)
+        {
+            var armed = ctx.Palette?.Armed;
+            if (armed == null || ctx.Sheet == null || ctx.LinksActive)
+                return;
+            var mouse = Event.current.mousePosition;
+            if (!view.PaneRect.Contains(mouse))
+                return;
+
+            var cursor = view.PaneToSheetLocal(mouse);
+            if (StudioPlacement.IsPolygonTerrain(armed))
+            {
+                // Polygon terrain is drawn point by point in a face pane; the prefab's default square is never what gets placed.
+                var marker = view.SheetLocalToPane(cursor);
+                EditorGUI.DrawRect(new Rect(marker.x - 3f, marker.y - 3f, 6f, 6f), PlaceGhostColor);
+                GUI.Label(new Rect(marker.x + 8f, marker.y - 8f, 220f, 16f), PolygonTerrainHint, EditorStyles.miniLabel);
+                return;
+            }
+            var footprint = StudioPlacement.PlacedFootprint(armed);
+            if (!StudioFoldMapping.TryMapToAuthored(ctx.Model.DisplayLayers, cursor, out var face, out var authored))
+            {
+                // Over empty desk: the footprint in the sheet's authored invalid tint (plan §5), never placeable.
+                var refused = new Rect(footprint.position + cursor, footprint.size);
+                DrawLoop(ctx.Settings.InvalidTint, 2f,
+                    new Vector2(refused.xMin, refused.yMin), new Vector2(refused.xMax, refused.yMin),
+                    new Vector2(refused.xMax, refused.yMax), new Vector2(refused.xMin, refused.yMax));
+                var gui = view.SheetLocalToPane(cursor);
+                GUI.Label(new Rect(gui.x + 6f, gui.y - 8f, 160f, 16f), "No Sheet here", EditorStyles.miniLabel);
+                return;
+            }
+            authored = StudioPlacement.Snap(authored, ctx.SnapIncrement);
+            var target = new Rect(footprint.position + authored, footprint.size);
+            StudioFoldMapping.AuthoredBoxToDeskPieces(ctx.Model.DisplayLayers, face, target, scratchPieces);
+            foreach (var piece in scratchPieces)
+                DrawPolygon(PlaceGhostColor, 2f, piece.Piece);
+            var labelAt = view.SheetLocalToPane(cursor);
+            GUI.Label(new Rect(labelAt.x + 8f, labelAt.y - 8f, 120f, 16f), $"→ {face}", EditorStyles.miniLabel);
+        }
+
+        (GameObject element, SheetFace face, Transform root) SelectedElement(in Context ctx)
+        {
+            var active = Selection.activeGameObject;
+            if (active == null)
+                return (null, default, null);
+            foreach (var (root, face) in new[] { (ctx.Sheet.Front, SheetFace.Front), (ctx.Sheet.Back, SheetFace.Back) })
+            {
+                var element = StudioPlacement.ElementRootOf(active.transform, root);
+                if (element != null && StudioPlacement.CanEdit(element, ctx.Sheet))
+                    return (element, face, root);
+            }
+            return (null, default, null);
+        }
+
+        void DrawPolygon(Color color, float width, ConvexPolygon polygon)
+        {
+            var vertices = polygon.Vertices;
+            if (vertices.Count < 2)
+                return;
+            var points = new Vector3[vertices.Count + 1];
+            for (int i = 0; i < vertices.Count; i++)
+                points[i] = view.SheetLocalToPane(vertices[i]);
+            points[^1] = points[0];
+            Handles.color = color;
+            Handles.DrawAAPolyLine(width, points);
         }
 
         void DrawSegment(Color color, float pixels, Vector2 a, Vector2 b)
@@ -356,50 +505,120 @@ namespace Papercut.EditorTools
         void OnPress(Event e, in Context ctx)
         {
             GUIUtility.keyboardControl = 0;
+            Report(string.Empty);
+            BeginPress(ctx, view.PaneToSheetLocal(e.mousePosition));
+            e.Use();
+        }
+
+        /// <summary>
+        /// The press-priority chain (Aaron, 2026-08-31: fold gestures before elements):
+        /// armed palette place → ghost → Seam unfold → crease grab → edge/corner fold → element select/move.
+        /// Internal and Event-free so tests can drive it headlessly.
+        /// </summary>
+        internal PressOutcome BeginPress(in Context ctx, Vector2 local)
+        {
             var model = ctx.Model;
             var settings = ctx.Settings;
-            var local = view.PaneToSheetLocal(e.mousePosition);
-            Report(string.Empty);
 
-            // The ghost grabs first, but only when the press isn't claiming a seam or crease.
+            // 1. Armed palette: place through the fold — Aaron's original ask verbatim.
+            var armed = ctx.Palette?.Armed;
+            if (armed != null && ctx.Sheet != null)
+            {
+                if (StudioPlacement.IsPolygonTerrain(armed))
+                {
+                    Report(PolygonTerrainHint);
+                    return PressOutcome.PlaceRefusedPolygonTerrain;
+                }
+                if (!StudioFoldMapping.TryMapToAuthored(model.Layers, local, out var targetFace, out var authored))
+                {
+                    Report("No Sheet under the cursor.");
+                    return PressOutcome.PlaceRefusedNoSheet;
+                }
+                var targetRoot = targetFace == SheetFace.Front ? ctx.Sheet.Front : ctx.Sheet.Back;
+                var placed = StudioPlacement.Place(armed, targetRoot, targetFace, authored, ctx.SnapIncrement);
+                if (placed == null)
+                    return PressOutcome.Nothing; // Place already logged the failure.
+                Selection.activeGameObject = placed;
+                Report($"Placed on the {targetFace} face.");
+                return PressOutcome.Placed;
+            }
+
+            // 2. The ghost, when the press isn't claiming a seam or crease.
             if (model.Ghost.HasValue && model.Ghost.Value.Contains(local) && !NearSeamOrCrease(model, local, settings))
             {
                 drag = DragKind.Ghost;
                 ghostGrabOffset = model.Ghost.Value.center - local;
-                e.Use();
-                return;
+                return PressOutcome.GhostDragStarted;
             }
 
-            // The game's press order: Seam (unfold), then crease (fold further), then edge/corner (new fold).
+            // 3–5. The game's press order: Seam (unfold), then crease (fold further), then edge/corner (new fold).
             if (model.TryUnfoldAt(local, settings.UnfoldGrabDistance, out var rejection))
             {
                 if (model.GhostWasRelocated)
                     Report("Ghost moved to stay on the Sheet.");
-                e.Use();
-                return;
+                return PressOutcome.Unfolded;
             }
             if (rejection == FoldRejection.PlayerOnFlap)
             {
                 Report("Not unfolded: the test player stands on that flap.");
-                e.Use();
-                return;
+                return PressOutcome.UnfoldRefused;
             }
-
             if (model.TryGrabCreaseAt(local, settings.CreaseGrabDistance, out var grabbed))
             {
                 BeginFoldDrag(ctx, grabbed.Anchor, grabbed.Depth, local);
-                e.Use();
-                return;
+                return PressOutcome.FoldDragStarted;
             }
             if (TryResolveAnchor(local, settings, out var anchor))
             {
                 BeginFoldDrag(ctx, anchor, 0f, local);
-                e.Use();
-                return;
+                return PressOutcome.FoldDragStarted;
             }
             if (rejection == FoldRejection.CoveredByLaterFold)
+            {
                 Report("That fold is covered by a later fold; unfold that first.");
-            e.Use();
+                return PressOutcome.UnfoldRefused;
+            }
+
+            // 6. Element select/move — inert while Link mode is on (Aaron: wiring stays in the face panes).
+            if (ctx.LinksActive)
+                return PressOutcome.ElementInertLinkMode;
+            return BeginElementPress(ctx, local);
+        }
+
+        PressOutcome BeginElementPress(in Context ctx, Vector2 local)
+        {
+            if (ctx.Sheet == null)
+                return PressOutcome.Nothing;
+            var pressLayer = StudioFoldMapping.TopLayerAt(ctx.Model.Layers, local);
+            if (pressLayer < 0)
+            {
+                Selection.activeGameObject = null; // Bare desk clears the selection, like empty sheet does.
+                return PressOutcome.Nothing;
+            }
+            StudioFoldMapping.MapThroughLayer(ctx.Model.Layers, pressLayer, local, out var face, out var authored);
+
+            var root = face == SheetFace.Front ? ctx.Sheet.Front : ctx.Sheet.Back;
+            var picked = StudioPlacement.PickElement(root, ctx.Sheet, authored);
+            Selection.activeGameObject = picked;
+            if (picked == null)
+                return PressOutcome.Nothing;
+
+            // Desk-space grab offset (round-1 N4), computed through the SAME layer the press mapped through
+            // (code review M1): the element's centre may lie on a different piece with a different isometry
+            // (a crease-straddler), and mixing isometries teleports the element on the first drag pixel.
+            // Extrapolating the press layer's isometry keeps press offset and every MapThroughLayer coherent.
+            // The element's face IS `face`: PickElement searched exactly that face's root.
+            Vector2 authoredCentre = picked.transform.localPosition;
+            var flatCentre = face == SheetFace.Front ? authoredCentre : SheetGeometry.BackToFront(authoredCentre);
+            var elementDesk = ctx.Model.Layers.Layers[pressLayer].ToDesk.Apply(flatCentre);
+            elementGrabOffsetDesk = elementDesk - local;
+
+            drag = DragKind.Element;
+            dragElement = picked;
+            elementUndoGroup = Undo.GetCurrentGroup();
+            // Held until release so Auto Save writes the drag once, at the end (StudioEdits); 0 when driven headlessly.
+            GUIUtility.hotControl = controlId;
+            return PressOutcome.ElementDragStarted;
         }
 
         void BeginFoldDrag(in Context ctx, FoldAnchor anchor, float grabDepth, Vector2 local)
@@ -424,6 +643,24 @@ namespace Papercut.EditorTools
                     ctx.Model.MoveGhost(view.PaneToSheetLocal(e.mousePosition) + ghostGrabOffset);
                     e.Use();
                     break;
+                case DragKind.Element:
+                {
+                    // Follow-the-cursor (Aaron): the cursor picks the topmost layer (and alone decides
+                    // empty desk — the element is never dropped onto bare desk); cursor+offset maps through
+                    // that layer's isometry, extrapolated, so motion is continuous near boundaries.
+                    var cursor = view.PaneToSheetLocal(e.mousePosition);
+                    var layerIndex = StudioFoldMapping.TopLayerAt(ctx.Model.Layers, cursor);
+                    if (layerIndex >= 0 && dragElement != null)
+                    {
+                        StudioFoldMapping.MapThroughLayer(ctx.Model.Layers, layerIndex,
+                            cursor + elementGrabOffsetDesk, out var face, out var authored);
+                        if (!StudioPlacement.MoveMapped(dragElement, ctx.Sheet, face, authored, ctx.SnapIncrement, out var reason)
+                            && reason != null)
+                            Report(reason);
+                    }
+                    e.Use();
+                    break;
+                }
             }
         }
 
@@ -445,6 +682,13 @@ namespace Papercut.EditorTools
                 {
                     Report("Ghost moved to stay on the Sheet.");
                 }
+                e.Use();
+            }
+            else if (drag == DragKind.Element)
+            {
+                Undo.CollapseUndoOperations(elementUndoGroup); // One undo step per drag, however many face crossings.
+                dragElement = null;
+                ReleaseHotControl();
                 e.Use();
             }
             else if (drag == DragKind.Ghost)

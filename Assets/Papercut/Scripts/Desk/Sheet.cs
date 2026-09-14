@@ -11,7 +11,7 @@ namespace Papercut
     /// A Sheet must be a direct child of a <see cref="Desk"/>'s <see cref="Desk.SheetGrid"/>, which lays it out
     /// from <see cref="GridPosition"/> and slides it between Screens.
     /// Everything authored on a sheet lives under one of its two face roots, <see cref="Front"/> and
-    /// <see cref="Back"/>. Each authored sheet is a prefab variant of the Sheet prefab (Assets/Papercut/Sheets),
+    /// <see cref="Back"/>. Each authored sheet is a prefab variant of the Sheet prefab (Assets/Papercut/Sheets/&lt;Desk scene name&gt;/),
     /// built in isolation and placed on the Desk by parenting it and setting <see cref="GridPosition"/>.
     /// Face content is put on the <see cref="FoldLayers"/> layers at Awake and is visible only through the sheet's
     /// <see cref="IFoldRenderer"/>. Both face roots stay active and never move; what exists physically, and
@@ -30,10 +30,26 @@ namespace Papercut
             "beneath Front point (-x, y) - the sheet turned over about its vertical edge. Never moved at runtime.")]
         Transform back;
 
+        [Header("Testing")]
+        [SerializeField, Tooltip("Show this sheet's collision: every terrain region draws its collider as a solid fill (its " +
+            "TerrainFill colour), in the game and in the Sheet Studio. For playing and designing a sheet before its map art " +
+            "is drawn - off for the shipped look. Saved per sheet.")]
+        bool showCollision;
+
         Desk desk;
         SheetFolds folds;
 
         public Vector2Int GridPosition => gridPosition;
+
+        /// <summary>True while this sheet draws its terrain collision as solid fills (see <see cref="TerrainFill"/>).</summary>
+        public bool ShowCollision => showCollision;
+
+        /// <summary>
+        /// Raised from OnValidate (editor only) whenever the sheet's fields are edited - the Inspector or the Sheet
+        /// Studio toggling <see cref="ShowCollision"/> included. Listeners refresh idempotently, so an unrelated
+        /// edit costs nothing but a cheap recheck.
+        /// </summary>
+        public event Action ShowCollisionChanged;
 
         /// <summary>Root of the Front face's authored content. Children are in sheet-local space.</summary>
         public Transform Front => front;
@@ -128,6 +144,7 @@ namespace Papercut
                 transform.localPosition = parentDesk.GridToLocal(gridPosition);
 
             ValidateFaceRoots();
+            ShowCollisionChanged?.Invoke();
         }
 
         void ValidateFaceRoots()

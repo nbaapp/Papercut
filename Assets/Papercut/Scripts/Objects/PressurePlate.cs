@@ -47,7 +47,7 @@ namespace Papercut
         Color pressedColor = new(0.45f, 0.4f, 0.15f, 0.9f);
 
         BoxCollider2D box;
-        OccludedBoxCollider occluded;
+        OccludedCollider occluded;
         Sheet sheet;
         Transform faceRoot;
         Rect flatRect;
@@ -69,7 +69,7 @@ namespace Papercut
         void Awake()
         {
             box = GetComponent<BoxCollider2D>();
-            occluded = new OccludedBoxCollider(box);
+            occluded = new OccludedCollider(box);
             if (!box.isTrigger)
             {
                 Debug.LogError($"PressurePlate '{name}' collider must be a trigger. Fixing at runtime; please fix the asset.", this);
@@ -191,7 +191,7 @@ namespace Papercut
 
         // ----- IFoldOccludee -----
 
-        public Rect FaceLocalFootprint(Transform root) => FoldFootprint.FaceLocalRect(box, root);
+        public FaceFootprint FaceLocalFootprint(Transform root) => FaceFootprint.FromRect(FoldFootprint.FaceLocalRect(box, root));
 
         public void OnFoldCoverageChanged(in CoverageResult coverage, Transform space) => occluded.Apply(coverage, space);
 
