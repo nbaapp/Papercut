@@ -47,29 +47,57 @@ namespace Papercut.Tests
         }
 
         [Test]
-        public void BlockDrawing_OnTheFront_IsLaidOutInFlatSpace()
+        public void BlockDrawing_IsLaidOutUprightAroundTheDeskCentre()
         {
-            var rect = new Rect(2.5f, -1.5f, 0.74f, 0.68f);
-            var centre = rect.center;
-            AssertUv(new Vector2(0.5f, 0.5f), PushableBlock.DrawingUv(Canvas, rect, SheetFace.Front, centre), "pivot at the centre");
-            var right = PushableBlock.DrawingUv(Canvas, rect, SheetFace.Front, centre + new Vector2(0.2625f, 0f));
+            var centre = new Vector2(2.87f, -1.16f);
+            AssertUv(new Vector2(0.5f, 0.5f), PushableBlock.DrawingUv(Canvas, centre, centre), "pivot at the centre");
+            var right = PushableBlock.DrawingUv(Canvas, centre, centre + new Vector2(0.2625f, 0f));
             AssertUv(new Vector2(0.75f, 0.5f), right, "a quarter canvas to the right of the centre reads the right half of the frame");
+            var up = PushableBlock.DrawingUv(Canvas, centre, centre + new Vector2(0f, 0.2625f));
+            AssertUv(new Vector2(0.5f, 0.75f), up, "a quarter canvas above the centre reads the top half of the frame");
         }
 
         [Test]
-        public void BlockDrawing_OnTheBack_IsLaidOutInBackSpace_LikeEveryOtherBackContent()
+        public void BlockDrawing_OnAFlap_IsNotMirrored()
         {
-            // Bible §6: Back content is authored in Back-space, where point (x, y) lies beneath Front point (−x, y).
-            // A Back-side block's drawing must read as authored (as the Studio's Back pane shows it), so a flat
-            // point to the RIGHT of the centre (Front-space +x) is to the LEFT in Back-space and reads the frame's
-            // left half — the mirror of the Front case above. The layer's reflection then carries it with the paper.
-            var rect = new Rect(2.5f, -1.5f, 0.74f, 0.68f);
-            var centre = rect.center;
-            AssertUv(new Vector2(0.5f, 0.5f), PushableBlock.DrawingUv(Canvas, rect, SheetFace.Back, centre), "pivot at the centre");
-            var right = PushableBlock.DrawingUv(Canvas, rect, SheetFace.Back, centre + new Vector2(0.2625f, 0f));
-            AssertUv(new Vector2(0.25f, 0.5f), right, "Front +x is Back −x");
-            var up = PushableBlock.DrawingUv(Canvas, rect, SheetFace.Back, centre + new Vector2(0f, 0.2625f));
-            AssertUv(new Vector2(0.5f, 0.75f), up, "y is not mirrored");
+            // A Front block at flat (3, 0) lifted by an east fold of depth 2 (crease x = 3.5) lands at desk (4, 0), Back-up.
+            // Its drawing is laid out in Desk space around the landed centre, so desk +x still reads the frame's right
+            // half: the Flap's reflection carries the block but never its picture (Aaron, 2026-09-24).
+            var stack = SheetLayers.Flat.Apply(new Fold(FoldAnchor.EdgeEast, 2f), 0, out _);
+            var flatCentre = new Vector2(3f, 0f);
+            var layer = SheetPlacement.LayerContaining(stack, new Vector2(4.5f, 0f)); // The lifted piece's flat coordinates are its Original's.
+            var deskCentre = stack.Layers[layer].ToDesk.Apply(flatCentre);
+            Assert.AreEqual(4f, deskCentre.x, 1e-4f, "landed mirror of x = 3 across the crease at 3.5");
+            var right = PushableBlock.DrawingUv(Canvas, deskCentre, deskCentre + new Vector2(0.2625f, 0f));
+            AssertUv(new Vector2(0.75f, 0.5f), right, "desk +x reads the frame's right half on the Flap too");
+        }
+
+        [Test]
+        public void DrawingRect_IsTheFrameAtItsOwnScale_PivotAtTheCentre()
+        {
+            var centre = new Vector2(2.87f, -1.16f);
+            var drawn = PushableBlock.DrawingRect(Canvas, centre);
+            Assert.AreEqual(centre.x, drawn.center.x, 1e-5f, "centred on the block");
+            Assert.AreEqual(centre.y, drawn.center.y, 1e-5f, "centred on the block");
+            Assert.AreEqual(1.05f, drawn.width, 1e-5f, "2100 px / 2000 ppu");
+            Assert.AreEqual(1.05f, drawn.height, 1e-5f, "2100 px / 2000 ppu");
+        }
+
+        [Test]
+        public void DrawingRect_OffCentrePivot_ShiftsTheFrame_AndAgreesWithTheUvMapping()
+        {
+            // A 400 x 200 px frame at 400 ppu (1 x 0.5 units) whose pivot is 100 px from its left edge and 50 px from
+            // its bottom: the frame reaches 0.25 units left of the centre and 0.75 right, 0.125 below and 0.375 above.
+            var frame = new SpriteFrame(new Rect(0f, 0f, 400f, 200f), new Vector2(100f, 50f), 400f, new Vector2(400f, 200f));
+            var centre = new Vector2(2.87f, -1.16f);
+            var drawn = PushableBlock.DrawingRect(frame, centre);
+            Assert.AreEqual(centre.x - 0.25f, drawn.xMin, 1e-5f, "100 px left of the pivot");
+            Assert.AreEqual(centre.x + 0.75f, drawn.xMax, 1e-5f, "300 px right of the pivot");
+            Assert.AreEqual(centre.y - 0.125f, drawn.yMin, 1e-5f, "50 px below the pivot");
+            Assert.AreEqual(centre.y + 0.375f, drawn.yMax, 1e-5f, "150 px above the pivot");
+            // The rect and the UV mapping agree: the frame's corners map to the frame's UV corners.
+            AssertUv(new Vector2(0f, 0f), PushableBlock.DrawingUv(frame, centre, new Vector2(drawn.xMin, drawn.yMin)), "xMin/yMin is the frame's bottom-left");
+            AssertUv(new Vector2(1f, 1f), PushableBlock.DrawingUv(frame, centre, new Vector2(drawn.xMax, drawn.yMax)), "xMax/yMax is the frame's top-right");
         }
 
         [Test]

@@ -358,5 +358,112 @@ namespace Papercut.Tests
             var picked = StudioPlacement.PickElement(front, sheet, new Vector2(1f, 1f));
             Assert.AreEqual(block, picked, "clicking any collider of an element must select the element root");
         }
+
+        // ----- Universal regions (above the sheet, Aaron 2026-09-28) -----
+
+        const string UniversalWallPath = "Assets/Papercut/Prefabs/Terrain/Universal Wall.prefab";
+        const string FilterWallPath = "Assets/Papercut/Prefabs/Terrain/Filter Wall.prefab";
+        const string UniversalFilterWallPath = "Assets/Papercut/Prefabs/Terrain/Universal Filter Wall.prefab";
+
+        static Transform AddAbove(Sheet sheet)
+        {
+            var above = new GameObject("Above").transform;
+            above.SetParent(sheet.transform, false);
+            above.localPosition = new Vector3(0f, 0f, 0.3f);
+            var serialized = new SerializedObject(sheet);
+            serialized.FindProperty("above").objectReferenceValue = above;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            return above;
+        }
+
+        [Test]
+        public void IsUniversal_ReadsThePrefabsFlag()
+        {
+            foreach (var path in new[] { UniversalWallPath, UniversalFilterWallPath, "Assets/Papercut/Prefabs/Terrain/Universal Wall (Polygon).prefab" })
+                Assert.IsTrue(StudioPlacement.IsUniversal(LoadPrefab(path)), path);
+            foreach (var path in new[] { WallPath, WaterPath, GatePath, FilterWallPath, BlockPath, TreePath })
+                Assert.IsFalse(StudioPlacement.IsUniversal(LoadPrefab(path)), path);
+        }
+
+        [Test]
+        public void TargetRoot_SendsAUniversalPrefabAbove_FromTheFrontPaneOnly()
+        {
+            var sheet = CreateTestSheet(out var front, out _);
+            Assert.AreEqual(front, StudioPlacement.TargetRoot(LoadPrefab(WallPath), sheet, front, aboveEditable: true, out _), "a face prefab goes to the face root");
+            Assert.IsNull(StudioPlacement.TargetRoot(LoadPrefab(UniversalWallPath), sheet, front, aboveEditable: true, out var noRoot), "no Above root yet");
+            StringAssert.Contains("Above root", noRoot);
+
+            var above = AddAbove(sheet);
+            Assert.AreEqual(above, StudioPlacement.TargetRoot(LoadPrefab(UniversalWallPath), sheet, front, aboveEditable: true, out _));
+            Assert.IsNull(StudioPlacement.TargetRoot(LoadPrefab(UniversalWallPath), sheet, front, aboveEditable: false, out var backPane), "the Back pane does not edit Above content");
+            StringAssert.Contains("Front pane", backPane);
+        }
+
+        [Test]
+        public void Place_UnderAbove_UsesTheDefaultLayer_AndIsEditable()
+        {
+            var sheet = CreateTestSheet(out var front, out _);
+            var above = AddAbove(sheet);
+
+            var placed = StudioPlacement.Place(LoadPrefab(UniversalWallPath), above, SheetFace.Front, new Vector2(1f, 2f), 0f);
+            Assert.AreEqual(above, placed.transform.parent);
+            Assert.AreEqual(Sheet.AboveLayer, placed.layer);
+            foreach (var child in placed.GetComponentsInChildren<Transform>(true))
+                Assert.AreEqual(Sheet.AboveLayer, child.gameObject.layer, child.name);
+            Assert.AreEqual(-0.05f, placed.transform.localPosition.z, 1e-5f, "authored z kept");
+            Assert.IsTrue(StudioPlacement.CanEdit(placed, sheet));
+            Assert.IsFalse(StudioPlacement.CanEdit(above.gameObject, sheet), "the root itself is never an element");
+
+            var wall = StudioPlacement.Place(LoadPrefab(WallPath), front, SheetFace.Front, Vector2.zero, 0f);
+            Assert.AreEqual(FoldLayers.Front, wall.layer, "face placement unchanged");
+        }
+
+        [Test]
+        public void MoveMapped_KeepsAUniversalElementAbove_AndRefusesTheBack()
+        {
+            var sheet = CreateTestSheet(out _, out _);
+            var above = AddAbove(sheet);
+            var placed = StudioPlacement.Place(LoadPrefab(UniversalWallPath), above, SheetFace.Front, new Vector2(1f, 2f), 0f);
+
+            Assert.IsTrue(StudioPlacement.MoveMapped(placed, sheet, SheetFace.Front, new Vector2(-1f, 0.5f), 0f, out _));
+            Assert.AreEqual(above, placed.transform.parent);
+            Assert.AreEqual(new Vector2(-1f, 0.5f), (Vector2)placed.transform.localPosition);
+
+            Assert.IsFalse(StudioPlacement.MoveMapped(placed, sheet, SheetFace.Back, Vector2.zero, 0f, out var reason));
+            StringAssert.Contains("above the sheet", reason);
+            Assert.AreEqual(above, placed.transform.parent, "never reparented");
+        }
+
+        [Test]
+        public void PickElement_OverRoots_PrefersTheSmallerHit_AndAboveOnATie()
+        {
+            var sheet = CreateTestSheet(out var front, out _);
+            var above = AddAbove(sheet);
+            var wall = StudioPlacement.Place(LoadPrefab(WallPath), front, SheetFace.Front, Vector2.zero, 0f);
+            var universal = StudioPlacement.Place(LoadPrefab(UniversalWallPath), above, SheetFace.Front, Vector2.zero, 0f);
+            var roots = new[] { front, above };
+
+            Assert.AreEqual(universal, StudioPlacement.PickElement(roots, sheet, Vector2.zero), "same 2x2 box on both roots: the one on top wins");
+
+            StudioPlacement.Resize(wall, Rect.MinMaxRect(-0.5f, -0.5f, 0.5f, 0.5f), 0f);
+            Assert.AreEqual(wall, StudioPlacement.PickElement(roots, sheet, Vector2.zero), "the smaller outline wins across roots");
+            Assert.AreEqual(universal, StudioPlacement.PickElement(roots, sheet, new Vector2(0.8f, 0.8f)), "outside the small wall, the universal one");
+            Assert.IsNull(StudioPlacement.PickElement(roots, sheet, new Vector2(4f, 4f)));
+        }
+
+        [Test]
+        public void MagnetTargets_OverRoots_IncludeUniversalVertices()
+        {
+            var sheet = CreateTestSheet(out var front, out _);
+            var above = AddAbove(sheet);
+            StudioPlacement.Place(LoadPrefab(UniversalWallPath), above, SheetFace.Front, new Vector2(2f, 2f), 0f);
+            var targets = new List<Vector2>();
+
+            StudioPlacement.MagnetTargets(front, null, targets);
+            Assert.AreEqual(0, targets.Count, "the face root alone has no regions");
+            StudioPlacement.MagnetTargets(new[] { front, above }, null, targets);
+            Assert.AreEqual(4, targets.Count, "the universal box's corners");
+            CollectionAssert.Contains(targets, new Vector2(1f, 1f));
+        }
     }
 }

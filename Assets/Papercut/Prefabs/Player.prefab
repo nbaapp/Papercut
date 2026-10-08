@@ -166,6 +166,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   animator: {fileID: 2003}
   run: {fileID: 11400000, guid: 8aacb55578884382b663af616e74fbbb, type: 2}
+  hold: {fileID: 11400000, guid: 57fd9a55f3ae4025bd9fba4dd283e716, type: 2}
   push: {fileID: 11400000, guid: 8d528a970de74b1e90b783fb26a3d0fb, type: 2}
   runInputThreshold: 0
   mirrorToFaceLeft: 1
@@ -179,10 +180,11 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 0b1e2d3c4a5f6e7d8c9b0a1f2e3d4c58, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   pushInputThreshold: 0.3
   pushFaceAxisFraction: 0.9
+  holdBreakDistance: 0.1
 --- !u!114 &1009
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -193,8 +195,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 0b1e2d3c4a5f6e7d8c9b0a1f2e3d4c5a, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1 &2000
 GameObject:
   m_ObjectHideFlags: 0
@@ -282,7 +284,7 @@ SpriteRenderer:
   m_FlipX: 0
   m_FlipY: 0
   m_DrawMode: 0
-  m_Size: {x: 1, y: 1}
+  m_Size: {x: 0.7505859, y: 1.05}
   m_AdaptiveModeThreshold: 0.5
   m_SpriteTileMode: 0
   m_WasSpriteAssigned: 1

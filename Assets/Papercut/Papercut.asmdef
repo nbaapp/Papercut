@@ -2,7 +2,8 @@
     "name": "Papercut",
     "rootNamespace": "Papercut",
     "references": [
-        "Unity.InputSystem"
+        "Unity.InputSystem",
+        "Unity.RenderPipelines.Universal.Runtime"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

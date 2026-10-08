@@ -306,5 +306,112 @@ namespace Papercut.Tests
             Assert.IsNotNull(water);
             Assert.AreNotEqual(wall.Color, water.Color, "a wall and water must be told apart at a glance");
         }
+
+        // ----- Universal regions (above the sheet, 2026-09-28): the fill follows the sheet's displayed folds -----
+
+        Sheet CreateSheetWithAbove(out Transform front, out Transform above, bool withFolds)
+        {
+            var sheet = CreateSheet(out front);
+            above = new GameObject("Above").transform;
+            above.SetParent(sheet.transform, false);
+            above.localPosition = new Vector3(0f, 0f, 0.3f);
+            var serialized = new SerializedObject(sheet);
+            serialized.FindProperty("above").objectReferenceValue = above;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            if (withFolds)
+                sheet.gameObject.AddComponent<SheetFolds>(); // No Awake in edit mode; its Layers is Flat by construction.
+            return sheet;
+        }
+
+        static TerrainFill AddUniversalBoxRegion(Transform above, Vector2 position, Vector2 size)
+        {
+            var go = new GameObject("Universal Wall");
+            go.transform.SetParent(above, false);
+            go.transform.localPosition = position;
+            go.AddComponent<BoxCollider2D>().size = size;
+            var region = go.AddComponent<TerrainRegion>();
+            var serialized = new SerializedObject(region);
+            serialized.FindProperty("universal").boolValue = true;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            var fill = go.AddComponent<TerrainFill>();
+            SetMaterial(fill);
+            return fill;
+        }
+
+        [Test]
+        public void Universal_WithoutFolds_DrawsTheAuthoredShape_OnItsOwnLayer()
+        {
+            var sheet = CreateSheetWithAbove(out _, out var above, withFolds: false);
+            var fill = AddUniversalBoxRegion(above, new Vector2(0f, -3.5f), new Vector2(1f, 1f));
+
+            StudioSheetOps.SetShowCollision(sheet, true);
+
+            Assert.IsNotNull(fill.Part);
+            Assert.IsTrue(fill.Part.enabled);
+            Assert.AreEqual(0, fill.Part.gameObject.layer, "main-camera content, never a face layer");
+            var mesh = fill.Part.GetComponent<MeshFilter>().sharedMesh;
+            Assert.AreEqual(new Vector3(1f, 1f, 0f), mesh.bounds.size);
+        }
+
+        [Test]
+        public void Universal_IsClippedToTheSheetsFootprint_AsDisplayed()
+        {
+            var sheet = CreateSheetWithAbove(out _, out var above, withFolds: true);
+            var fill = AddUniversalBoxRegion(above, new Vector2(0f, -3.5f), new Vector2(1f, 1f)); // y in [-4, -3]
+            StudioSheetOps.SetShowCollision(sheet, true);
+
+            // A south fold of depth 1 leaves the sheet at y >= -3.25: the fill keeps the top quarter, at the region's own depth.
+            var folded = SheetLayers.Flat.Apply(new Fold(FoldAnchor.EdgeSouth, 1f), 0, out _);
+            fill.RefreshWith(folded);
+            var mesh = fill.Part.GetComponent<MeshFilter>().sharedMesh;
+            Assert.AreEqual(1f, mesh.bounds.size.x, 1e-4f);
+            Assert.AreEqual(0.25f, mesh.bounds.size.y, 1e-4f);
+            Assert.AreEqual(0f, mesh.bounds.size.z, 1e-6f, "x/y only: the fill stays at the region's z");
+            Assert.AreEqual(0.375f, mesh.bounds.center.y, 1e-4f, "the surviving strip, region-local");
+
+            fill.RefreshWith(null); // Back to the sheet's own (flat) folds: the whole shape again.
+            Assert.AreEqual(1f, fill.Part.GetComponent<MeshFilter>().sharedMesh.bounds.size.y, 1e-4f);
+        }
+
+        [Test]
+        public void Universal_StillDraws_AfterAFoldClipsItsCollider()
+        {
+            // The bug: a fold that clipped a box region's collider added the runtime clip polygon beside the box, the
+            // fill took box + polygon for "no usable collider" and hid itself for good, while the collision went on.
+            var sheet = CreateSheetWithAbove(out _, out var above, withFolds: true);
+            var fill = AddUniversalBoxRegion(above, new Vector2(0f, -3.5f), new Vector2(1f, 1f)); // y in [-4, -3]
+            var region = fill.GetComponent<TerrainRegion>();
+            typeof(TerrainRegion).GetMethod("Awake", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .Invoke(region, null); // No Awake in edit mode; the game resolves the authored collider here.
+            StudioSheetOps.SetShowCollision(sheet, true);
+
+            // What SheetOcclusion hands the region after a south fold of depth 1: the strip left at y >= -3.25.
+            var folded = SheetLayers.Flat.Apply(new Fold(FoldAnchor.EdgeSouth, 1f), 0, out _);
+            var coverage = folded.CoverageAbove(region.FaceLocalFootprint(above));
+            Assert.IsFalse(coverage.IsWhole || coverage.IsNone, "precondition: the fold clips the region");
+            region.OnFoldCoverageChanged(coverage, sheet.transform);
+            Assert.AreEqual(2, fill.GetComponents<Collider2D>().Length, "precondition: the runtime clip polygon sits beside the box");
+
+            fill.RefreshWith(folded);
+            Assert.IsTrue(fill.Part.enabled, "the fill must survive its collider being clipped");
+            Assert.AreEqual(0.25f, fill.Part.GetComponent<MeshFilter>().sharedMesh.bounds.size.y, 1e-4f, "clipped like the collider");
+
+            fill.RefreshWith(null); // Unfolded: the whole authored box again, not the clip polygon.
+            Assert.IsTrue(fill.Part.enabled);
+            Assert.AreEqual(new Vector3(1f, 1f, 0f), fill.Part.GetComponent<MeshFilter>().sharedMesh.bounds.size);
+        }
+
+        [Test]
+        public void FaceFill_IgnoresTheDisplayedFolds()
+        {
+            // Face content folds with the paper through the face camera; its fill is never clipped here.
+            var sheet = CreateSheetWithAbove(out var front, out _, withFolds: true);
+            var fill = AddBoxRegion(front, new Vector2(1f, 1f));
+            fill.transform.localPosition = new Vector2(0f, -3.5f);
+            StudioSheetOps.SetShowCollision(sheet, true);
+
+            fill.RefreshWith(SheetLayers.Flat.Apply(new Fold(FoldAnchor.EdgeSouth, 1f), 0, out _));
+            Assert.AreEqual(new Vector3(1f, 1f, 0f), fill.Part.GetComponent<MeshFilter>().sharedMesh.bounds.size);
+        }
     }
 }

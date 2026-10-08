@@ -30,6 +30,10 @@ namespace Papercut
             "beneath Front point (-x, y) - the sheet turned over about its vertical edge. Never moved at runtime.")]
         Transform back;
 
+        [SerializeField, Tooltip("Root for content that sits above the sheet (universal regions), in sheet space. Never moved; folds " +
+            "slide under it. Optional on old sheets; the base Sheet prefab has one.")]
+        Transform above;
+
         [Header("Testing")]
         [SerializeField, Tooltip("Show this sheet's collision: every terrain region draws its collider as a solid fill (its " +
             "TerrainFill colour), in the game and in the Sheet Studio. For playing and designing a sheet before its map art " +
@@ -59,6 +63,16 @@ namespace Papercut
         /// Never moved; exposed Back content is placed by <see cref="SheetOcclusion"/> through its occludees.
         /// </summary>
         public Transform Back => back;
+
+        /// <summary>
+        /// Root of the content above the sheet (universal regions, Aaron 2026-09-28), in sheet space. Never moved;
+        /// folds slide under it and <see cref="SheetOcclusion"/> clips it to the sheet's footprint. Null on a sheet
+        /// that has none (old fixtures): such a sheet simply has no universal content.
+        /// </summary>
+        public Transform Above => above;
+
+        /// <summary>The layer content above the sheet lives on: the main camera's, since it must not fold with a face.</summary>
+        public const int AboveLayer = 0;
 
         /// <summary>This sheet's fold state.</summary>
         public SheetFolds Folds => folds;
@@ -125,6 +139,7 @@ namespace Papercut
                 SetLayerRecursively(front, FoldLayers.Front);
                 SetLayerRecursively(back, FoldLayers.Back);
             }
+            SetLayerRecursively(above, AboveLayer);
         }
 
         static void SetLayerRecursively(Transform root, int layer)
@@ -151,6 +166,14 @@ namespace Papercut
         {
             ValidateFaceRoot(front, "Front");
             ValidateFaceRoot(back, "Back");
+            // Above is optional (a sheet without universal content needs none); when assigned it must be the sheet's own.
+            if (above != null)
+            {
+                if (!above.IsChildOf(transform) || above == transform)
+                    Debug.LogError($"Sheet '{name}': Above root '{above.name}' must be a descendant of the sheet.", this);
+                else if (above == front || above == back)
+                    Debug.LogError($"Sheet '{name}': the Above root must not be a face root.", this);
+            }
         }
 
         void ValidateFaceRoot(Transform root, string faceName)

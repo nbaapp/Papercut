@@ -17,7 +17,10 @@ namespace Papercut
     {
         None = 0,
         Swim = 1 << 0,
-        /// <summary>Lets the player push blocks that ask for it (Design Doc: push/pull as a possible early unlockable). Unused by content for now (Aaron, 2026-08-27).</summary>
+        /// <summary>
+        /// Lets the player take hold of blocks to push and pull them (Design Doc: push/pull as an early unlockable). Every block asks for it
+        /// (the Block prefab's Requires Ability, Aaron 2026-09-17); granted by the Power Croissant <see cref="Unlockable"/>.
+        /// </summary>
         Push = 1 << 1,
     }
 }

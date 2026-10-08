@@ -5,7 +5,7 @@ description: The plan → adversarial plan review → code → code review pipel
 
 # Project Papercut — coding workflow
 
-Run this **after** `project-context` and `implementation-guidelines`. **Whether a task uses this workflow is Aaron's decision, not yours.** For every development task, ask Aaron up front whether to run the full workflow — describe the task's apparent size in a sentence and give a recommendation (full workflow vs. lightweight), then wait for his answer. Never invoke this skill unprompted, and never skip it on your own judgment either. If Aaron declines it for a task, all rules from `project-context` and `implementation-guidelines` (design questions go to Aaron, Inspector tunables, honest verification) still apply.
+Run this **after** `project-context` and `implementation-guidelines`. **Whether a task uses this workflow is Aaron's decision, not yours.** For every development task, ask Aaron up front whether to run the full workflow — describe the task's apparent size in a sentence and give a recommendation (full workflow vs. lightweight), then wait for his answer. In the same message, if you think the task is one of the rare ones that needs Play Mode verification, say so with the reason and ask for that separately (see *Play Mode is opt-in*); otherwise don't mention it. Never invoke this skill unprompted, and never skip it on your own judgment either. If Aaron declines it for a task, all rules from `project-context` and `implementation-guidelines` (design questions go to Aaron, Inspector tunables, honest verification) still apply.
 
 The goal of the pipeline: **Aaron makes every design decision; an unbiased second pair of eyes checks both the plan and the code.** Asking is *optional* at each gate — only ask when there is a genuine question per `implementation-guidelines` §1. The plan and both reviews are *not* optional.
 
@@ -39,7 +39,7 @@ Write the plan to `Documents/Plans/<yyyy-mm-dd>-<short-slug>.md` (create the fol
 5. **Components & data** — each new/changed class or component: responsibility, public surface, serialized fields, and which are **Inspector tunables** (per `implementation-guidelines` §4a) with their defaults.
 6. **Behaviour** — step-by-step description of what happens at runtime, including edge cases and failure modes (what happens on bad input, missing references, etc.). No silent failures.
 7. **Interfaces & seams** — anything going behind an interface and why; how a future cut of this feature would be done (delete which component/prefab?).
-8. **Testing** — how correctness will be verified: Edit Mode / Play Mode tests, the mechanical checks you will run through the Unity CLI (see *Verification*), and — separately — what Aaron needs to play to confirm feel and intent. Be explicit about which is which.
+8. **Testing** — how correctness will be verified: Edit Mode tests, the mechanical checks you will run through the Unity CLI (see *Verification*), and — separately — what Aaron needs to play to confirm feel and intent. Be explicit about which is which. Play Mode (Play Mode tests, `editor_play`) appears here only if Aaron opted in for this task; if he did, say exactly what you will do in it. If he didn't, everything runtime-only goes in the "Aaron plays it" list.
 9. **Assumptions** — every engineering assumption you are making. Design assumptions are not allowed here — those are questions for step 3.
 10. **Open questions** — anything that came up while planning. If non-empty, this is step 3.
 
@@ -96,25 +96,37 @@ Your final reply must include:
 - every design question that was asked and its answer (or "none");
 - every engineering assumption;
 - the plan-review and code-review findings that were rejected, with reasons;
-- how it was verified: compile result, tests run and their actual output, what you did in Play Mode and what you observed — never claim a pass you didn't see;
+- how it was verified: compile result, tests run and their actual output, and — only if Aaron opted in — what you did in Play Mode and what you observed. Never claim a pass you didn't see;
 - **what still needs Aaron to play it** — the feel/intent questions the mechanical checks cannot answer. Never present a clean CLI run as "it works"; present it as "it doesn't break, and here is what I couldn't judge".
 
 ## Verification — what the Unity CLI can and cannot tell you
 
 The `unity` CLI plus the `com.unity.pipeline` package drive the **open** editor from the terminal (syntax and gotchas are in memory: `unity-cli-pipeline`). Use it for every step-6 verification; the old Roslyn compile approximation is the fallback only if the editor isn't running.
 
-Standard mechanical pass, in order:
+Aaron often runs **more than one Claude instance against the same open editor**. The editor is a shared resource: there is one Play Mode, one test runner, one compile pipeline. The rules below exist so instances don't collide.
+
+### Play Mode is opt-in — default is never
+
+Do **not** enter Play Mode (`editor_play`, `run_tests {"mode":"playmode"}` / `"all"`, or anything else that starts the player) unless Aaron explicitly said yes to it *for this task*. Aaron plays every change himself anyway; Play Mode from the CLI is for the rare case where a runtime-only state can't be reached any other way and he wants it probed before he sits down. The workflow is:
+
+- Never enter Play Mode on your own judgment, however "visible or interactive" the change is. Visible/interactive behaviour is what Aaron's playtest is for.
+- If you genuinely think a task needs it, ask once, batched with the workflow question at the start of the task: one sentence on *what* runtime-only thing you'd probe and *why* edit-mode checks can't reach it. Don't ask for it routinely — most tasks don't qualify, and asking every time defeats the point.
+- If Aaron says yes: before `editor_play`, poll `editor_status` and confirm the editor is **not** already playing (another instance may be); if it is, wait and retry, and if it stays busy ask Aaron rather than proceeding. Then `editor_play`, poll for `playing`, `get_console_logs` (no errors/exceptions), `capture_game_view` (Read the PNG and describe what you actually see), `eval` to read the relevant state, then `editor_stop`. Never leave Play Mode running.
+- If Aaron says no or you didn't ask: don't. Put the runtime-only checks in the report's "what still needs Aaron to play it" list instead. A silent Play Mode run is a rule violation even if it finds nothing.
+
+### Standard mechanical pass, in order
 
 1. `recompile` → poll `recompile_status` until `up_to_date`/`completed`; the `errors[]` array must be empty.
-2. `run_tests {"mode":"editor"}` (and `"playmode"` if the plan added any). Report the Summary numbers and every failure verbatim, including pre-existing ones.
-3. If the change affects anything visible or interactive: `editor_play`, poll `editor_status` for `playing`, then `get_console_logs` (no errors/exceptions), `capture_game_view` (Read the PNG and describe what you actually see), and `eval` to read the relevant state (e.g. a component's field, a count of objects). Then `editor_stop`. Do not leave Play Mode running.
+2. **Collision check** before any test run. The editor test runner closes open prefab stages, blocks on a dirty scene, and a second run started on top of a first wedges both. Probe, via `eval`/status commands: `editor_status` is not `playing`; `test_status` reports no run in progress; `recompile_status` is not compiling; `EditorSceneManager.GetActiveScene().isDirty` is false. If anything is busy, wait and re-probe (a test suite takes ~30–60 s); if it stays busy or the scene is dirty, stop and ask Aaron — never save his scene, never cancel another instance's run, never start on top of it.
+3. `run_tests {"mode":"editor"}`. Report the Summary numbers and every failure verbatim, including pre-existing ones. Afterwards re-open any prefab stage the runner closed (`PrefabStageUtility.OpenPrefab`) and re-check any asset you had edited on disk (see memory `unity-cli-pipeline`).
 4. For prefab/scene edits made by hand in YAML: load them through the editor (`find_assets`, `get_serialized_fields`, or `eval` with `PrefabUtility.LoadPrefabContents`) and check for missing scripts / broken references.
+5. Anything else that can be read in **edit mode** through `eval` (component fields, prefab contents, a geometry query) is fair game and preferred over Play Mode.
 
-**The limit — read this twice.** A clean pass through all four steps means the change *compiles, doesn't throw, and its state looks right in the one situation you set up*. It does **not** mean the feature works as intended. You are not playing the game: you cannot feel the drag of a fold, notice that a gate opens a beat too late, see that something reads wrong at a glance, or discover the interaction that the design implies but the plan didn't spell out. Only Aaron can do that.
+**The limit — read this twice.** A clean pass through these steps means the change *compiles, doesn't throw, and its state looks right in the one situation you set up*. It does **not** mean the feature works as intended. You are not playing the game: you cannot feel the drag of a fold, notice that a gate opens a beat too late, see that something reads wrong at a glance, or discover the interaction that the design implies but the plan didn't spell out. Only Aaron can do that.
 
 So:
 
 - Never write "verified working", "works as intended", or "feature complete" on the strength of CLI checks. Say what was checked and what was observed.
-- A screenshot is evidence of one frame, not of behaviour over time. Describe it literally ("Scuffy is on Sheet (0,0) left of the wall; the gate is closed") rather than interpreting it as success.
+- A screenshot (only ever taken in an opted-in Play Mode run) is evidence of one frame, not of behaviour over time. Describe it literally ("Scuffy is on Sheet (0,0) left of the wall; the gate is closed") rather than interpreting it as success.
 - Treat a green run as the *entry ticket* to Aaron's playtest, not a substitute for it. The report's "what still needs Aaron to play it" list is mandatory even when everything passed.
 - If the CLI shows something *wrong* (an exception, a failing test, a state that contradicts the plan), that is real and must be fixed or reported — negative results are reliable; positive results are partial.

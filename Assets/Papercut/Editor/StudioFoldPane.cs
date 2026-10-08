@@ -16,9 +16,6 @@ namespace Papercut.EditorTools
         public const string MinDepthField = "minDepth";
         public const string PreviewTintField = "previewTint";
         public const string InvalidTintField = "invalidTint";
-        public const string CreaseColorField = "creaseColor";
-        public const string RememberedCreaseColorField = "rememberedCreaseColor";
-        public const string CreaseWidthField = "creaseWidth";
         public const string SeamWidthField = "seamWidth";
         public const string SeamColorField = "seamColor";
         public const string PixelsPerUnitField = "pixelsPerUnit";
@@ -29,13 +26,11 @@ namespace Papercut.EditorTools
         public const string CreaseGrabDistanceField = "creaseGrabDistance";
         public const string DepthSnapField = "depthSnap";
         public const string RememberCreasesField = "rememberCreases";
+        public const string AllowStackingField = "allowStacking";
 
         public readonly float MinDepth;
         public readonly Color PreviewTint;
         public readonly Color InvalidTint;
-        public readonly Color CreaseColor;
-        public readonly Color RememberedCreaseColor;
-        public readonly float CreaseWidth;
         public readonly float SeamWidth;
         public readonly Color SeamColor;
         public readonly int PixelsPerUnit;
@@ -47,25 +42,26 @@ namespace Papercut.EditorTools
         public readonly float DepthSnap;
         public readonly bool RememberCreases;
 
+        /// <summary>The sheet's stacking toggle: off, the preview holds a drag short of the other folds' Flaps as the game does.</summary>
+        public readonly bool AllowStacking;
+
         /// <summary>Non-null when a sheet component was missing and defaults filled in — shown, never silent.</summary>
         public readonly string MissingNote;
 
         /// <summary>Editor constant: what shows where folds emptied the sheet. Not the game's Desk surface.</summary>
         public Color PaneBackground => new(0.22f, 0.2f, 0.18f, 1f);
 
-        StudioFoldSettings(float minDepth, Color previewTint, Color invalidTint, Color creaseColor, Color rememberedCreaseColor,
-            float creaseWidth, float seamWidth, Color seamColor, int pixelsPerUnit, Material faceMaterial,
+        StudioFoldSettings(float minDepth, Color previewTint, Color invalidTint,
+            float seamWidth, Color seamColor, int pixelsPerUnit, Material faceMaterial,
             float cornerGrabRadius, float edgeGrabMargin, float unfoldGrabDistance, float creaseGrabDistance, float depthSnap,
-            bool rememberCreases, string missingNote)
+            bool rememberCreases, bool allowStacking, string missingNote)
         {
             RememberCreases = rememberCreases;
+            AllowStacking = allowStacking;
             MissingNote = missingNote;
             MinDepth = minDepth;
             PreviewTint = previewTint;
             InvalidTint = invalidTint;
-            CreaseColor = creaseColor;
-            RememberedCreaseColor = rememberedCreaseColor;
-            CreaseWidth = creaseWidth;
             SeamWidth = seamWidth;
             SeamColor = seamColor;
             PixelsPerUnit = pixelsPerUnit;
@@ -84,9 +80,6 @@ namespace Papercut.EditorTools
             var minDepth = 0.25f;
             var previewTint = new Color(1f, 1f, 1f, 0.85f);
             var invalidTint = new Color(1f, 0.35f, 0.35f, 0.85f);
-            var creaseColor = new Color(0.25f, 0.2f, 0.15f, 0.9f);
-            var rememberedColor = new Color(0.25f, 0.2f, 0.15f, 0.35f);
-            var creaseWidth = 0.06f;
             var seamWidth = 0.08f;
             var seamColor = new Color(0.15f, 0.12f, 0.1f, 0.9f);
             var pixelsPerUnit = 128;
@@ -100,6 +93,7 @@ namespace Papercut.EditorTools
             var creaseGrab = 0.3f;
             var depthSnap = 0f;
             var rememberCreases = true;
+            var allowStacking = true;
             string missingNote = null;
 
             if (sheet != null && sheet.TryGetComponent(out SheetFolds folds))
@@ -107,6 +101,7 @@ namespace Papercut.EditorTools
                 var so = new SerializedObject(folds);
                 minDepth = so.FindProperty(MinDepthField)?.floatValue ?? minDepth;
                 rememberCreases = so.FindProperty(RememberCreasesField)?.boolValue ?? rememberCreases;
+                allowStacking = so.FindProperty(AllowStackingField)?.boolValue ?? allowStacking;
             }
             else
             {
@@ -117,9 +112,6 @@ namespace Papercut.EditorTools
                 var so = new SerializedObject(renderer);
                 previewTint = so.FindProperty(PreviewTintField)?.colorValue ?? previewTint;
                 invalidTint = so.FindProperty(InvalidTintField)?.colorValue ?? invalidTint;
-                creaseColor = so.FindProperty(CreaseColorField)?.colorValue ?? creaseColor;
-                rememberedColor = so.FindProperty(RememberedCreaseColorField)?.colorValue ?? rememberedColor;
-                creaseWidth = so.FindProperty(CreaseWidthField)?.floatValue ?? creaseWidth;
                 seamWidth = so.FindProperty(SeamWidthField)?.floatValue ?? seamWidth;
                 seamColor = so.FindProperty(SeamColorField)?.colorValue ?? seamColor;
                 pixelsPerUnit = so.FindProperty(PixelsPerUnitField)?.intValue ?? pixelsPerUnit;
@@ -143,9 +135,9 @@ namespace Papercut.EditorTools
                 depthSnap = so.FindProperty(DepthSnapField)?.floatValue ?? depthSnap;
             }
 
-            return new StudioFoldSettings(minDepth, previewTint, invalidTint, creaseColor, rememberedColor,
-                creaseWidth, seamWidth, seamColor, pixelsPerUnit, faceMaterial,
-                cornerGrab, edgeGrab, unfoldGrab, creaseGrab, depthSnap, rememberCreases, missingNote);
+            return new StudioFoldSettings(minDepth, previewTint, invalidTint,
+                seamWidth, seamColor, pixelsPerUnit, faceMaterial,
+                cornerGrab, edgeGrab, unfoldGrab, creaseGrab, depthSnap, rememberCreases, allowStacking, missingNote);
         }
 
         /// <summary>
@@ -154,22 +146,14 @@ namespace Papercut.EditorTools
         /// a zero-size ghost would silently disable the covers-player rule).
         /// </summary>
         public static Vector2 ReadPlayerFootprintSize()
-        {
-            var player = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Papercut/Prefabs/Player.prefab");
-            var box = player != null ? player.GetComponent<BoxCollider2D>() : null;
-            if (box == null || box.size.x <= 0f || box.size.y <= 0f)
-            {
-                Debug.LogWarning("Sheet Studio: Player.prefab or its BoxCollider2D not found; the test-player ghost uses a 0.5 x 0.5 footprint.");
-                return new Vector2(0.5f, 0.5f);
-            }
-            return box.size;
-        }
+            => StudioPlaytest.ReadPlayerFootprint(StudioSheetOps.FindOpenDesk()).Size; // One reader: the open Desk's Player first, then Player.prefab.
     }
 
     /// <summary>
     /// The fold-preview pane: shows the sheet folded exactly as the game's composite would, with the game's
     /// drag gesture — Seam click unfolds, crease grab folds further, edge/corner grab starts a new fold; live
-    /// preview, red refuse, release commits, right-click/Escape cancels — plus the draggable test-player ghost.
+    /// preview, red refuse, release commits, right-click/Escape cancels; the drag holds short of the sheet's
+    /// paperweights as in the game (the model's MaxDepth) — plus the draggable test-player ghost.
     /// </summary>
     public sealed class StudioFoldPane
     {
@@ -180,6 +164,10 @@ namespace Papercut.EditorTools
             public StudioFoldScene Scene;
             public StudioFoldSettings Settings;
             public Sheet Sheet;
+            /// <summary>The sheet's Above root (universal regions, Aaron 2026-09-28): drawn over the composite clipped to the sheet's footprint, picked and dragged in sheet space.</summary>
+            public Transform AboveRoot;
+            /// <summary>Fill the universal regions as the face panes' Terrain view does.</summary>
+            public bool ShowTerrain;
             public StudioPalette Palette;
             public float SnapIncrement;
             /// <summary>Link mode is face-pane-only (Aaron, 2026-08-31): the element branch goes inert.</summary>
@@ -194,6 +182,8 @@ namespace Papercut.EditorTools
             PlaceRefusedNoSheet,
             /// <summary>Polygon terrain is drawn in a face pane, never dropped as its prefab's default shape.</summary>
             PlaceRefusedPolygonTerrain,
+            /// <summary>A universal region cannot be placed: the sheet has no Above root.</summary>
+            PlaceRefusedNoAboveRoot,
             GhostDragStarted,
             Unfolded,
             UnfoldRefused,
@@ -223,6 +213,8 @@ namespace Papercut.EditorTools
         GameObject dragElement;
         Vector2 elementGrabOffsetDesk; // Desk-space (plan round-1 N4): authored-space offsets mirror across flaps.
         int elementUndoGroup;
+        /// <summary>The dragged element sits above the sheet: it moves in sheet space, never mapped through a fold.</summary>
+        bool dragAbove;
         int controlId; // This pane's IMGUI control, allocated per draw; held as hotControl for an element drag (see StudioPane.BeginEditDrag).
         readonly List<StudioFoldMapping.DeskPiece> scratchPieces = new();
         readonly List<ConvexPolygon> scratchAuthored = new();
@@ -344,8 +336,41 @@ namespace Papercut.EditorTools
                     new Vector2(ghost.xMax, ghost.yMax), new Vector2(ghost.xMin, ghost.yMax));
             }
 
+            DrawUniversalRegions(ctx);
             DrawSelectionThroughFold(ctx);
             DrawPlacementGhost(ctx);
+        }
+
+        /// <summary>
+        /// The universal regions as the game will show them on this stack: authored pieces clipped to the sheet's
+        /// footprint as displayed (<see cref="SheetLayers.CoverageAbove"/>), unmoved by any fold.
+        /// </summary>
+        void DrawUniversalRegions(in Context ctx)
+        {
+            // Drawn with the Terrain overlay, and whenever the sheet shows collision (the game would draw them; the
+            // face fills in the composite already follow that flag through the face cameras).
+            var showCollision = ctx.Sheet != null && ctx.Sheet.ShowCollision;
+            if ((!ctx.ShowTerrain && !showCollision) || ctx.AboveRoot == null)
+                return;
+            foreach (var region in ctx.AboveRoot.GetComponentsInChildren<TerrainRegion>(true))
+            {
+                if (!StudioPlacement.TryGetRegionPieces(region, ctx.AboveRoot, scratchAuthored))
+                    continue;
+                var clipped = ctx.Model.DisplayLayers.CoverageAbove(FaceFootprint.FromPieces(scratchAuthored));
+                foreach (var part in clipped.VisibleParts)
+                    FillPolygon(StudioPane.UniversalFill, part);
+            }
+        }
+
+        void FillPolygon(Color color, ConvexPolygon polygon)
+        {
+            if (polygon.Count < 3)
+                return;
+            var points = new Vector3[polygon.Count];
+            for (int i = 0; i < points.Length; i++)
+                points[i] = view.SheetLocalToPane(polygon.Vertices[i]);
+            Handles.color = color;
+            Handles.DrawAAConvexPolygon(points);
         }
 
         /// <summary>
@@ -364,6 +389,14 @@ namespace Papercut.EditorTools
             StudioPlacement.AuthoredFootprintPieces(element, root, scratchAuthored);
             if (scratchAuthored.Count == 0)
                 return;
+            if (root == ctx.AboveRoot)
+            {
+                // Above the sheet: nothing of it is ever face-down; it is only clipped to the footprint as displayed.
+                var clipped = ctx.Model.DisplayLayers.CoverageAbove(FaceFootprint.FromPieces(scratchAuthored));
+                foreach (var part in clipped.VisibleParts)
+                    DrawPolygon(SelectionColorFold, 3f, part);
+                return;
+            }
             // DisplayLayers, not Layers: during a fold drag the composite under the highlight includes the
             // previewed fold, and the highlight must agree with the pixels beneath it (code review S5).
             StudioFoldMapping.AuthoredPiecesToDeskPieces(ctx.Model.DisplayLayers, face, scratchAuthored, scratchPieces);
@@ -395,6 +428,34 @@ namespace Papercut.EditorTools
                 return;
             }
             var footprint = StudioPlacement.PlacedFootprint(armed);
+            if (StudioPlacement.IsUniversal(armed))
+            {
+                // Above the sheet: dropped in sheet space at the cursor, shown clipped to the footprint as displayed.
+                var snappedCursor = StudioPlacement.Snap(cursor, ctx.SnapIncrement);
+                var aboveRect = new Rect(footprint.position + snappedCursor, footprint.size);
+                var clipped = ctx.Model.DisplayLayers.CoverageAbove(FaceFootprint.FromRect(aboveRect));
+                var labelPoint = view.SheetLocalToPane(cursor);
+                if (ctx.AboveRoot == null)
+                {
+                    DrawLoop(ctx.Settings.InvalidTint, 2f,
+                        new Vector2(aboveRect.xMin, aboveRect.yMin), new Vector2(aboveRect.xMax, aboveRect.yMin),
+                        new Vector2(aboveRect.xMax, aboveRect.yMax), new Vector2(aboveRect.xMin, aboveRect.yMax));
+                    GUI.Label(new Rect(labelPoint.x + 6f, labelPoint.y - 8f, 200f, 16f), "No Above root on this sheet", EditorStyles.miniLabel);
+                    return;
+                }
+                if (clipped.IsNone)
+                {
+                    DrawLoop(ctx.Settings.InvalidTint, 2f,
+                        new Vector2(aboveRect.xMin, aboveRect.yMin), new Vector2(aboveRect.xMax, aboveRect.yMin),
+                        new Vector2(aboveRect.xMax, aboveRect.yMax), new Vector2(aboveRect.xMin, aboveRect.yMax));
+                    GUI.Label(new Rect(labelPoint.x + 6f, labelPoint.y - 8f, 160f, 16f), "No Sheet here", EditorStyles.miniLabel);
+                    return;
+                }
+                foreach (var part in clipped.VisibleParts)
+                    DrawPolygon(PlaceGhostColor, 2f, part);
+                GUI.Label(new Rect(labelPoint.x + 8f, labelPoint.y - 8f, 120f, 16f), "→ Above", EditorStyles.miniLabel);
+                return;
+            }
             if (!StudioFoldMapping.TryMapToAuthored(ctx.Model.DisplayLayers, cursor, out var face, out var authored))
             {
                 // Over empty desk: the footprint in the sheet's authored invalid tint (plan §5), never placeable.
@@ -420,7 +481,7 @@ namespace Papercut.EditorTools
             var active = Selection.activeGameObject;
             if (active == null)
                 return (null, default, null);
-            foreach (var (root, face) in new[] { (ctx.Sheet.Front, SheetFace.Front), (ctx.Sheet.Back, SheetFace.Back) })
+            foreach (var (root, face) in new[] { (ctx.Sheet.Front, SheetFace.Front), (ctx.Sheet.Back, SheetFace.Back), (ctx.Sheet.Above, SheetFace.Front) })
             {
                 var element = StudioPlacement.ElementRootOf(active.transform, root);
                 if (element != null && StudioPlacement.CanEdit(element, ctx.Sheet))
@@ -529,6 +590,27 @@ namespace Papercut.EditorTools
                     Report(PolygonTerrainHint);
                     return PressOutcome.PlaceRefusedPolygonTerrain;
                 }
+                if (StudioPlacement.IsUniversal(armed))
+                {
+                    // Above the sheet: dropped in sheet space where the cursor is, if the sheet lies there.
+                    var aboveRoot = StudioPlacement.TargetRoot(armed, ctx.Sheet, ctx.Sheet.Front, aboveEditable: true, out var refusal);
+                    if (aboveRoot == null)
+                    {
+                        Report(refusal);
+                        return PressOutcome.PlaceRefusedNoAboveRoot;
+                    }
+                    if (StudioFoldMapping.TopLayerAt(model.Layers, local) < 0)
+                    {
+                        Report("No Sheet under the cursor.");
+                        return PressOutcome.PlaceRefusedNoSheet;
+                    }
+                    var placedAbove = StudioPlacement.Place(armed, aboveRoot, SheetFace.Front, local, ctx.SnapIncrement);
+                    if (placedAbove == null)
+                        return PressOutcome.Nothing;
+                    Selection.activeGameObject = placedAbove;
+                    Report("Placed above the sheet.");
+                    return PressOutcome.Placed;
+                }
                 if (!StudioFoldMapping.TryMapToAuthored(model.Layers, local, out var targetFace, out var authored))
                 {
                     Report("No Sheet under the cursor.");
@@ -597,11 +679,26 @@ namespace Papercut.EditorTools
             }
             StudioFoldMapping.MapThroughLayer(ctx.Model.Layers, pressLayer, local, out var face, out var authored);
 
+            // Above content is picked at the unmapped desk point (it never moves with a fold); the face hit through the
+            // layer under the cursor. The smaller outline wins, a tie to Above - it is on top (plan review N3).
             var root = face == SheetFace.Front ? ctx.Sheet.Front : ctx.Sheet.Back;
-            var picked = StudioPlacement.PickElement(root, ctx.Sheet, authored);
+            StudioPlacement.TryPickElement(root, ctx.Sheet, authored, out var picked, out var faceArea);
+            if (ctx.AboveRoot != null && StudioPlacement.TryPickElement(ctx.AboveRoot, ctx.Sheet, local, out var above, out var aboveArea)
+                && (picked == null || aboveArea <= faceArea))
+            {
+                Selection.activeGameObject = above;
+                elementGrabOffsetDesk = (Vector2)above.transform.localPosition - local;
+                drag = DragKind.Element;
+                dragElement = above;
+                dragAbove = true;
+                elementUndoGroup = Undo.GetCurrentGroup();
+                GUIUtility.hotControl = controlId;
+                return PressOutcome.ElementDragStarted;
+            }
             Selection.activeGameObject = picked;
             if (picked == null)
                 return PressOutcome.Nothing;
+            dragAbove = false;
 
             // Desk-space grab offset (round-1 N4), computed through the SAME layer the press mapped through
             // (code review M1): the element's centre may lie on a different piece with a different isometry
@@ -649,6 +746,13 @@ namespace Papercut.EditorTools
                     // empty desk — the element is never dropped onto bare desk); cursor+offset maps through
                     // that layer's isometry, extrapolated, so motion is continuous near boundaries.
                     var cursor = view.PaneToSheetLocal(e.mousePosition);
+                    if (dragAbove)
+                    {
+                        if (dragElement != null)
+                            StudioPlacement.Move(dragElement, cursor + elementGrabOffsetDesk, ctx.SnapIncrement);
+                        e.Use();
+                        break;
+                    }
                     var layerIndex = StudioFoldMapping.TopLayerAt(ctx.Model.Layers, cursor);
                     if (layerIndex >= 0 && dragElement != null)
                     {
@@ -674,8 +778,8 @@ namespace Papercut.EditorTools
                 if (!ctx.Model.TryCommit(dragFold, ctx.Settings.MinDepth, out var rejection))
                 {
                     // The game's filter: refusals already shown red, and clicks that never became drags, stay quiet.
-                    if (rejection != FoldRejection.CoversPlayer && rejection != FoldRejection.TooShallow
-                        && rejection != FoldRejection.NothingToFold)
+                    if (rejection != FoldRejection.CoversPlayer && rejection != FoldRejection.CoversObstacle
+                        && rejection != FoldRejection.TooShallow && rejection != FoldRejection.NothingToFold)
                         Report($"Fold not made: {rejection}.");
                 }
                 else if (ctx.Model.GhostWasRelocated)
@@ -698,7 +802,7 @@ namespace Papercut.EditorTools
             drag = DragKind.None;
         }
 
-        /// <summary>The fold under the cursor: depth from the drag point and grabbed line, snapped, clamped to MaxDepth.</summary>
+        /// <summary>The fold under the cursor: depth from the drag point and grabbed line, snapped, clamped to MaxDepth (overhang and paperweights).</summary>
         Fold ComputeDragFold(in Context ctx, Vector2 local)
         {
             var depth = FoldGeometry.DepthForDragPoint(dragAnchor, local, dragGrabDepth);

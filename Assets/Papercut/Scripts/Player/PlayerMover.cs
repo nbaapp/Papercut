@@ -23,6 +23,9 @@ namespace Papercut
         /// <summary>Direction the player is trying to move, magnitude 0..1. Kept even while movement is held.</summary>
         public Vector2 MoveInput => moveInput;
 
+        /// <summary>The interact key (Space / gamepad South), down or not, as last read by <see cref="PlayerControls"/>. Kept even while movement is held.</summary>
+        public bool InteractHeld { get; private set; }
+
         /// <summary>World units per second at full input, before <see cref="SpeedScale"/>.</summary>
         public float MoveSpeed => moveSpeed;
 
@@ -30,13 +33,23 @@ namespace Papercut
 
         /// <summary>
         /// Multiplies this step's speed (0..1). State, not a tunable: set each physics step by whatever slows the
-        /// player (e.g. <see cref="BlockPusher"/> while pushing a block) and reset to 1 by the same thing.
+        /// player (e.g. <see cref="BlockPusher"/> while holding a block) and reset to 1 by the same thing.
         /// </summary>
         public float SpeedScale
         {
             get => speedScale;
             set => speedScale = Mathf.Clamp01(value);
         }
+
+        /// <summary>
+        /// State, not a tunable: while set, this step moves by this input (magnitude 0..1) instead of the player's
+        /// own. Set each physics step by whatever steers the player (<see cref="BlockPusher"/> while holding a
+        /// block: the player's input along the block's axis, or nothing) and cleared to null by the same thing.
+        /// </summary>
+        public Vector2? MoveOverride { get; set; }
+
+        /// <summary>What this step actually moves by: the override if one is set, else the player's own input.</summary>
+        public Vector2 EffectiveMoveInput => MoveOverride ?? moveInput;
 
         bool movementEnabled = true;
         RigidbodyInterpolation2D heldInterpolation;
@@ -76,6 +89,8 @@ namespace Papercut
 
         public void SetMoveInput(Vector2 input) => moveInput = Vector2.ClampMagnitude(input, 1f);
 
+        public void SetInteractInput(bool held) => InteractHeld = held;
+
         /// <summary>Teleports the player, discarding any velocity. Z is preserved.</summary>
         public void PlaceAt(Vector2 worldPosition)
         {
@@ -86,7 +101,7 @@ namespace Papercut
 
         void FixedUpdate()
         {
-            body.linearVelocity = MovementEnabled ? moveInput * (moveSpeed * speedScale) : Vector2.zero;
+            body.linearVelocity = MovementEnabled ? EffectiveMoveInput * (moveSpeed * speedScale) : Vector2.zero;
         }
     }
 }

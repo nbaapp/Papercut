@@ -16,24 +16,29 @@ namespace Papercut
 
     /// <summary>
     /// One crease line as a mark on one face of the sheet, in that face's authored space (Front-space under
-    /// Front, Back-space under Back) so that it is drawn as face content and moves with the sheet.
-    /// <see cref="Shift"/> is the unit direction the live mark is offset by (half its width): on the face that
-    /// was up when the fold was made the mark sits wholly on the staying side, on the face that was down
-    /// wholly on the lifted side — the lifted side lands on that same strip, so both faces show one full-width line.
+    /// Front, Back-space under Back), so that it moves with the sheet like the rest of the face. The renderer
+    /// shades the paper along it through a crease normal map, centred on the line: each piece of the folded sheet
+    /// shows its own half.
     /// </summary>
     public readonly struct CreaseMark
     {
         public SheetFace Face { get; }
         public Vector2 A { get; }
         public Vector2 B { get; }
-        public Vector2 Shift { get; }
 
-        public CreaseMark(SheetFace face, Vector2 a, Vector2 b, Vector2 shift)
+        /// <summary>Unit vector perpendicular to AB, in the mark's face space, toward the side of the crease that lifted.</summary>
+        public Vector2 LiftedSide { get; }
+
+        /// <summary>True if this face was the cut layer's up face when the fold was made: the inside of the fold.</summary>
+        public bool Inside { get; }
+
+        public CreaseMark(SheetFace face, Vector2 a, Vector2 b, Vector2 liftedSide, bool inside)
         {
             Face = face;
             A = a;
             B = b;
-            Shift = shift;
+            LiftedSide = liftedSide;
+            Inside = inside;
         }
     }
 
@@ -95,13 +100,14 @@ namespace Papercut
         public bool Overlaps(in FoldEffect other)
         {
             foreach (var mine in Lifted)
-                if (other.OverlapsPolygon(mine)) return true;
+                if (other.Overlaps(mine)) return true;
             foreach (var mine in Landed)
-                if (other.OverlapsPolygon(mine)) return true;
+                if (other.Overlaps(mine)) return true;
             return false;
         }
 
-        bool OverlapsPolygon(ConvexPolygon polygon)
+        /// <summary>True if any lifted or landed piece shares area with <paramref name="polygon"/>.</summary>
+        public bool Overlaps(ConvexPolygon polygon)
         {
             foreach (var piece in Lifted)
                 if (piece.Overlaps(polygon)) return true;

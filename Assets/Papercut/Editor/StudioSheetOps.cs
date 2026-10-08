@@ -26,7 +26,8 @@ namespace Papercut.EditorTools
 
         /// <summary>
         /// Face-content convention (see the authored variants): the transparent Surface quad sits at z 0 on
-        /// the Front (+0.01 on the Back), background art at −0.01, elements at −0.05, creases at −0.1.
+        /// the Front (+0.01 on the Back), background art at −0.01, elements at −0.05, block drawings (movable
+        /// objects, drawn above the rest as the game does) at −0.08, creases at −0.1.
         /// Art must sort by z at sortingOrder 0 or it vanishes behind the Surface.
         /// </summary>
         public const float ArtZ = -0.01f;
@@ -432,6 +433,7 @@ namespace Papercut.EditorTools
             {
                 if (!SwapAssets(pathFrom, pathTo, folder, from, out message))
                     return MoveSheetResult.Failed;
+                StudioPlaytest.SwapSpawns(pathFrom, pathTo); // The playtest spawn is keyed by path; it stays with the sheet's content.
             }
             else
             {
@@ -441,6 +443,7 @@ namespace Papercut.EditorTools
                     message = $"Could not rename '{pathFrom}' to '{pathTo}': {error}";
                     return MoveSheetResult.Failed;
                 }
+                StudioPlaytest.RekeySpawn(pathFrom, pathTo);
             }
 
             // The player never moves; warn if its sheet leaves and nothing arrives in its place. In a swap
@@ -572,6 +575,7 @@ namespace Papercut.EditorTools
                 return DeleteSheetResult.Failed;
             }
             Undo.ClearAll();
+            StudioPlaytest.ClearSpawn(path); // Tidiness: a pref for a file that no longer exists.
             message = hadInstance
                 ? $"Deleted '{path}' and removed Sheet {Fmt(gridPosition)} from the Desk (Undo history cleared)."
                 : $"Deleted '{path}' (Undo history cleared).";
@@ -597,6 +601,7 @@ namespace Papercut.EditorTools
             var changed = 0;
             changed += NormalizeLayers(sheet.Front, FoldLayers.Front);
             changed += NormalizeLayers(sheet.Back, FoldLayers.Back);
+            changed += NormalizeLayers(sheet.Above, Sheet.AboveLayer); // Above content is main-camera content: never on a face layer.
             if (changed > 0 && sheet.gameObject.scene.IsValid())
                 EditorSceneManager.MarkSceneDirty(sheet.gameObject.scene);
             return changed;

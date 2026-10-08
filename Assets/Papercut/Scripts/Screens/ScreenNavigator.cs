@@ -58,19 +58,42 @@ namespace Papercut
             if (player == null)
                 return;
 
-            if (!desk.TryGetSheetAt(player.Position, out var startSheet))
+            // Held first so the body is not interpolating while its transform is moved (a playtest teleport,
+            // then the grid centring). PlayerMover.Position reads the body, which only picks the move up at
+            // the next physics step; nothing reads it before then.
+            player.MovementEnabled = false;
+
+            Sheet startSheet;
+            if (PlaytestStart.TryConsume(out var playtest))
+            {
+                // The Sheet Studio's Playtest button: start on the sheet being edited, at its spawn point,
+                // instead of where the Player object is saved. Refused the way an arrival is (no room), or
+                // when the sheet is not on this Desk; either way the saved start is used and the reason logged.
+                if (PlaytestStart.TryResolve(desk, playtest, HasRoom, out startSheet, out var world, out var reason))
+                {
+                    player.PlaceAt(world);
+                }
+                else
+                {
+                    Debug.LogError($"Playtest start refused ({playtest}): {reason}. Starting where the Player is saved instead.", this);
+                    startSheet = null;
+                }
+            }
+            else
+            {
+                startSheet = null;
+            }
+
+            if (startSheet == null && !desk.TryGetSheetAt(player.Position, out startSheet))
             {
                 Debug.LogError($"Player at {player.Position} is not on any sheet; cannot pick a starting Screen.", this);
+                player.MovementEnabled = true;
                 return;
             }
 
             currentScreen = startSheet;
             currentScreen.NotifyPlayerEntered();
-            // Moves the player too (a child of the sheet grid). Held so the body is not interpolating
-            // while its transform is moved. PlayerMover.Position reads the body, which only picks the
-            // move up at the next physics step; nothing reads it before then.
-            player.MovementEnabled = false;
-            slider.Centre(currentScreen);
+            slider.Centre(currentScreen); // Moves the player too (a child of the sheet grid).
             player.MovementEnabled = true;
         }
 
@@ -114,10 +137,31 @@ namespace Papercut
         {
             if (playerCollider == null)
                 return true;
-            var size = (Vector2)playerCollider.bounds.size;
-            var box = new Rect(entry - size * 0.5f, size);
+            var box = PlayerBoxAt(playerCollider, entry);
             var occlusion = destination.GetComponent<SheetOcclusion>();
             return occlusion == null || TravelRules.HasRoom(box, occlusion.SolidFootprints(playerAbilities));
+        }
+
+        /// <summary>
+        /// The player's collision box with its centre placed at <paramref name="centre"/>. A box collider is read
+        /// from its authored size and offset (scaled): <c>Collider2D.bounds</c> is physics-populated and can be
+        /// degenerate before the first physics step (a playtest start), and a zero box passes every room test.
+        /// </summary>
+        public static Rect PlayerBoxAt(Collider2D collider, Vector2 centre)
+        {
+            Vector2 size, offset;
+            if (collider is BoxCollider2D box)
+            {
+                var scale = (Vector2)box.transform.lossyScale;
+                size = Vector2.Scale(box.size, new Vector2(Mathf.Abs(scale.x), Mathf.Abs(scale.y)));
+                offset = Vector2.Scale(box.offset, scale);
+            }
+            else
+            {
+                size = collider.bounds.size;
+                offset = (Vector2)collider.bounds.center - (Vector2)collider.transform.position;
+            }
+            return new Rect(centre + offset - size * 0.5f, size);
         }
 
         IEnumerator Transition(Vector2 entry, Sheet destination, PlayerMover traveller)

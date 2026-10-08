@@ -252,18 +252,61 @@ namespace Papercut
         }
 
         /// <summary>
-        /// Crease marks for a layer the crease cuts: on the face that is up, the mark shifts toward the staying
-        /// side (−n); on the face that is down, toward the lifted side (+n). Both are expressed in that face's
-        /// authored space; the Back mark is the Front-space mark through <see cref="SheetGeometry.BackToFront"/>.
+        /// What is left of content that sits <em>above</em> the sheet (a universal region, Aaron 2026-09-28): the
+        /// parts of a sheet-space footprint that lie on the sheet's footprint - the union of every layer where it
+        /// lies - as disjoint pieces (each layer's part minus the layers above it). Above content never moves, so
+        /// it is Whole exactly when the surviving area is the footprint's, whatever lies under it; None (Covered)
+        /// when nothing of it is over the sheet; Partial otherwise. Flat, this trims a footprint hanging past the
+        /// sheet's edge - the same rule as when folded.
+        /// </summary>
+        public CoverageResult CoverageAbove(FaceFootprint footprint)
+        {
+            if (footprint.IsEmpty)
+                return CoverageResult.None(FoldCoverage.Uncovered);
+
+            var parts = new List<ConvexPolygon>();
+            foreach (var authored in footprint.Pieces)
+            {
+                for (int i = 0; i < layers.Count; i++)
+                {
+                    var piece = authored.Intersect(layers[i].Desk);
+                    if (piece.IsEmpty)
+                        continue;
+                    var pieces = new List<ConvexPolygon> { piece };
+                    for (int j = i + 1; j < layers.Count && pieces.Count > 0; j++)
+                    {
+                        var above = layers[j].Desk;
+                        var remaining = new List<ConvexPolygon>();
+                        foreach (var p in pieces)
+                            remaining.AddRange(p.Subtract(above));
+                        pieces = remaining;
+                    }
+                    parts.AddRange(pieces);
+                }
+            }
+
+            if (parts.Count == 0)
+                return CoverageResult.None(FoldCoverage.Covered);
+            var total = 0f;
+            foreach (var p in parts)
+                total += p.Area;
+            return total >= footprint.Area - ContainmentTolerance
+                ? CoverageResult.Whole(FoldCoverage.Uncovered, footprint)
+                : CoverageResult.Clipped(parts);
+        }
+
+        /// <summary>
+        /// Crease marks for a layer the crease cuts, one per face, each in that face's authored space: the side that
+        /// lifted (the Back mark is the Front-space mark through <see cref="SheetGeometry.BackToFront"/>), and which
+        /// face was inside the fold — the one that was up.
         /// </summary>
         static void AddMarks(List<CreaseMark> marks, in Layer layer, Isometry2D inverse, Vector2 a, Vector2 b, Vector2 flapNormal)
         {
             var frontA = inverse.Apply(a);
             var frontB = inverse.Apply(b);
-            var towardStay = inverse.ApplyVector(-flapNormal);
-            var frontShift = layer.FrontUp ? towardStay : -towardStay;
-            marks.Add(new CreaseMark(SheetFace.Front, frontA, frontB, frontShift));
-            marks.Add(new CreaseMark(SheetFace.Back, SheetGeometry.BackToFront(frontA), SheetGeometry.BackToFront(frontB), SheetGeometry.BackToFront(-frontShift)));
+            var towardLift = inverse.ApplyVector(flapNormal);
+            marks.Add(new CreaseMark(SheetFace.Front, frontA, frontB, towardLift, layer.FrontUp));
+            marks.Add(new CreaseMark(SheetFace.Back, SheetGeometry.BackToFront(frontA), SheetGeometry.BackToFront(frontB), SheetGeometry.BackToFront(towardLift), !layer.FrontUp));
         }
 
         static bool OnSheetBorder(Vector2 a, Vector2 b)

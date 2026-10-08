@@ -197,6 +197,7 @@ namespace Papercut.EditorTools
             var go = new GameObject(name) { hideFlags = HideFlags.HideAndDontSave };
             var camera = go.AddComponent<Camera>();
             camera.enabled = false;
+            FaceCameraRenderer.Use(camera); // like the game's face cameras: no screen copy
             camera.orthographic = true;
             camera.nearClipPlane = 0.1f;
             camera.farClipPlane = CameraDistance * 2f;

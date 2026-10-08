@@ -25,6 +25,10 @@ namespace Papercut.EditorTools
 
         const float FoldListWidth = 240f;
         const float FaceRowFraction = 0.55f;
+        static readonly GUIContent SpawnToggleContent = new("Spawn",
+            "Spawn mode: click in the Front pane where the player starts a playtest of this sheet. Remembered per sheet on this machine (editor prefs), not saved in the prefab. Red = no room there.");
+        static readonly GUIContent PlaytestButtonContent = new("▶ Playtest",
+            "Save this sheet and enter Play Mode with the player starting on it at the spawn marker. The Desk scene and its Player object are not changed; the ordinary Play button still starts where the Player is saved.");
         static readonly GUIContent CollisionToggleContent = new("Collision",
             "This sheet draws its terrain collision as solid fills, in the game and here. Saved with the sheet (Ctrl+S / Auto Save) - for testing before the map art is drawn.");
 
@@ -38,10 +42,23 @@ namespace Papercut.EditorTools
         StudioFoldScene foldScene;
         StudioFoldPane foldPane;
         StudioFoldSettings? settingsCache;
+        bool obstaclesDirty = true; // The stage's paperweights must be re-gathered into the fold model.
         string foldMessage = string.Empty;
         string attachedStagePath;
         Vector2Int newSheetPosition;
         bool xrayHeld;
+        bool spawnMode; // Spawn mode: a Front-pane click sets the playtest spawn. Exclusive with Link mode and placement.
+        SpawnState spawn; // The open sheet's spawn, refreshed at the top of every editing-view OnGUI.
+
+        /// <summary>The open sheet's playtest spawn as the Front pane draws it, computed once per frame on the Layout pass (an obstacle walk; cheap).</summary>
+        struct SpawnState
+        {
+            public Vector2 Point;
+            public Rect Box;
+            public bool HasRoom;
+            public bool IsDefault;
+            public StudioPlaytest.PlayerFootprint Footprint;
+        }
 
         // Picker (no-sheet view): the open Desk's set as a map. Slots are rebuilt at the top of every
         // OnGUI call; an operation ends its call with ExitGUI so nothing draws from stale slots.
@@ -186,12 +203,95 @@ namespace Papercut.EditorTools
             frontPane?.InvalidateOverlayCache();
             backPane?.InvalidateOverlayCache();
             settingsCache = null; // Authored values (tints, minDepth, drag tuning) may have changed.
+            obstaclesDirty = true; // A paperweight may have been placed, moved or removed.
             foldScene?.MarkDirty();
             Repaint();
         }
 
+        /// <summary>
+        /// Hands the fold model the sheet's fold obstacles (its paperweights) as authored: every active
+        /// <see cref="IFoldObstacle"/> under a face root, with its authored colliders as its footprint, the same
+        /// view the face panes have of it. The model ignores a hand-off that changes nothing.
+        /// </summary>
+        void RefreshObstacles(Sheet sheet)
+        {
+            obstaclesDirty = false;
+            var gathered = new List<(FaceFootprint footprint, SheetFace face)>();
+            var pieces = new List<ConvexPolygon>();
+            foreach (var obstacle in sheet.GetComponentsInChildren<IFoldObstacle>(false))
+            {
+                if (obstacle is not Component component)
+                    continue;
+                var t = component.transform;
+                Transform root;
+                SheetFace face;
+                if (t.IsChildOf(sheet.Front)) { root = sheet.Front; face = SheetFace.Front; }
+                else if (t.IsChildOf(sheet.Back)) { root = sheet.Back; face = SheetFace.Back; }
+                else
+                {
+                    foldMessage = $"'{component.name}' is a fold obstacle but is under neither face root; the fold preview ignores it.";
+                    continue;
+                }
+                StudioPlacement.AuthoredFootprintPieces(component.gameObject, root, pieces);
+                var footprint = FaceFootprint.FromPieces(pieces);
+                if (!footprint.IsEmpty)
+                    gathered.Add((footprint, face));
+            }
+            foldModel.SetObstacles(gathered);
+            RefreshBlocksAndWalls(sheet);
+        }
+
+        /// <summary>
+        /// Hands the fold model the sheet's blocks (every <see cref="PushableBlock"/> under a face root, as its
+        /// authored root box in flat Front space plus its face) and the universal walls that stop blocks (Above
+        /// root regions with Universal on and Blocks set, as sheet-space pieces), for the carried-under-a-wall
+        /// refusal (Aaron, 2026-09-28). Blocks are judged where they are authored - an editor limit, see the model.
+        /// </summary>
+        void RefreshBlocksAndWalls(Sheet sheet)
+        {
+            var blocks = new List<(Rect flatRect, SheetFace side)>();
+            foreach (var block in sheet.GetComponentsInChildren<PushableBlock>(false))
+            {
+                var t = block.transform;
+                Transform root;
+                SheetFace face;
+                if (t.IsChildOf(sheet.Front)) { root = sheet.Front; face = SheetFace.Front; }
+                else if (t.IsChildOf(sheet.Back)) { root = sheet.Back; face = SheetFace.Back; }
+                else continue; // Reported by the game at Awake; not this preview's concern.
+                if (!block.TryGetComponent(out BoxCollider2D box))
+                    continue;
+                var faceRect = FoldFootprint.FaceLocalRect(box, root);
+                blocks.Add((face == SheetFace.Front ? faceRect : SheetGeometry.BackToFront(faceRect), face));
+            }
+            var walls = new List<ConvexPolygon>();
+            var pieces = new List<ConvexPolygon>();
+            if (sheet.Above != null)
+            {
+                foreach (var region in sheet.Above.GetComponentsInChildren<TerrainRegion>(false))
+                {
+                    var serialized = new SerializedObject(region);
+                    if (!serialized.FindProperty("universal").boolValue)
+                        continue;
+                    if (!TerrainRules.StopsBlocks((TerrainBlocks)serialized.FindProperty("blocks").intValue))
+                        continue;
+                    if (StudioPlacement.TryGetRegionPieces(region, sheet.Above, pieces))
+                        walls.AddRange(pieces);
+                }
+            }
+            foldModel.SetBlocks(blocks);
+            foldModel.SetBlockWalls(walls);
+        }
+
         void OnGUI()
         {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                // Unity keeps the prefab stage open in Play Mode; every runtime change would otherwise repaint
+                // the panes and a stage attach could dirty the scene. Editing resumes when Play Mode stops.
+                EditorGUILayout.HelpBox("Play Mode is running — stop it to edit the sheet.", MessageType.Info);
+                return;
+            }
+
             var stage = PrefabStageUtility.GetCurrentPrefabStage();
             var sheet = stage != null && stage.prefabContentsRoot != null
                 ? stage.prefabContentsRoot.GetComponent<Sheet>()
@@ -247,12 +347,59 @@ namespace Papercut.EditorTools
             // don't repaint on their own, so hovering while armed must ask (one home for all three panes).
             if (Event.current.type == EventType.MouseMove && palette.Armed != null)
                 Repaint();
-            DrawToolbar(sheet);
+            // Once per frame, on the Layout pass (not on every mouse event): a Desk lookup and an obstacle walk.
+            if (Event.current.type == EventType.Layout)
+                RefreshSpawn(stage, sheet);
+            DrawToolbar(stage, sheet);
             DrawArtRow(sheet);
             DrawPanes(stage, sheet);
             palette.Draw(new Rect(0f, position.height - PaletteHeight, position.width, PaletteHeight));
-            if (links.Active && palette.Armed != null)
-                links.Exit(); // Arming a prefab means Aaron wants to place, not wire.
+            if (palette.Armed != null)
+            {
+                links.Exit(); // Arming a prefab means Aaron wants to place, not wire...
+                spawnMode = false; // ...nor set the spawn.
+            }
+        }
+
+        /// <summary>The open sheet's spawn marker state for this OnGUI: the pref, the Desk Player's box, and the room test.</summary>
+        void RefreshSpawn(PrefabStage stage, Sheet sheet)
+        {
+            var desk = StudioSheetOps.FindOpenDesk();
+            var abilities = StudioSheetOps.FindPlayerOnDesk(desk)?.GetComponent<PlayerAbilities>();
+            spawn.Footprint = StudioPlaytest.ReadPlayerFootprint(desk);
+            spawn.Point = StudioPlaytest.GetSpawn(stage.assetPath);
+            spawn.IsDefault = !StudioPlaytest.HasSpawn(stage.assetPath);
+            spawn.Box = spawn.Footprint.At(spawn.Point);
+            spawn.HasRoom = StudioPlaytest.SpawnHasRoom(sheet, spawn.Point, spawn.Footprint, abilities);
+        }
+
+        void OnSpawnPlaced(PrefabStage stage, Vector2 sheetLocal)
+        {
+            StudioPlaytest.SetSpawn(stage.assetPath, sheetLocal, spawn.Footprint);
+            studioMessage = string.Empty;
+            Repaint();
+        }
+
+        void OnPlaytest(PrefabStage stage, Sheet sheet)
+        {
+            EndDrags(); // Nothing may hold hotControl into Play Mode.
+            var desk = StudioSheetOps.FindOpenDesk();
+            if (StudioPlaytest.Playtest(stage, sheet, desk, out var message))
+            {
+                spawnMode = false;
+                studioMessage = message;
+                // A floating editor window always sits above the main window, so this one would cover the
+                // Game view (Aaron, 2026-09-28). Close it for the playtest; the play-mode hook brings it back,
+                // with this sheet, when Play Mode stops.
+                StudioPlaytest.RememberReopen(stage.assetPath);
+                Close();
+                GUIUtility.ExitGUI();
+            }
+            else
+            {
+                studioMessage = message;
+                Debug.LogWarning($"Sheet Studio: playtest refused — {message}");
+            }
         }
 
         void Attach(PrefabStage stage, Sheet sheet)
@@ -263,7 +410,9 @@ namespace Papercut.EditorTools
             studioMessage = string.Empty;
             foldModel.Clear(); // Preview folds are transient editor state, per stage.
             foldModel.SetGhostEnabled(false);
+            obstaclesDirty = true; // The new stage's paperweights.
             xrayHeld = false;
+            spawnMode = false; // The new stage's spawn is another sheet's pref.
             foldMessage = string.Empty;
             settingsCache = null;
             foldScene.MarkDirty();
@@ -542,7 +691,7 @@ namespace Papercut.EditorTools
 
         // ----- Editing view -----
 
-        void DrawToolbar(Sheet sheet)
+        void DrawToolbar(PrefabStage stage, Sheet sheet)
         {
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar, GUILayout.Height(ToolbarHeight)))
             {
@@ -564,7 +713,29 @@ namespace Papercut.EditorTools
                     links.Exit();
                     links.Active = linkMode;
                     if (linkMode)
+                    {
                         palette.Disarm(); // Link mode and placement are exclusive: pane clicks can only mean one thing.
+                        spawnMode = false;
+                    }
+                }
+                // Playtest (Aaron, 2026-09-24): Spawn mode sets where the player starts; Playtest saves the sheet
+                // and enters Play Mode starting there. The spawn is remembered per sheet in editor prefs.
+                var wantSpawn = GUILayout.Toggle(spawnMode, SpawnToggleContent, EditorStyles.toolbarButton, GUILayout.Width(50f));
+                if (wantSpawn != spawnMode)
+                {
+                    spawnMode = wantSpawn;
+                    if (spawnMode)
+                    {
+                        links.Exit();
+                        links.Active = false;
+                        palette.Disarm();
+                        draft.Clear();
+                    }
+                }
+                using (new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling))
+                {
+                    if (GUILayout.Button(PlaytestButtonContent, EditorStyles.toolbarButton, GUILayout.Width(64f)))
+                        OnPlaytest(stage, sheet);
                 }
                 if (GUILayout.Button("Frame (F)", EditorStyles.toolbarButton, GUILayout.Width(50f)))
                 {
@@ -574,8 +745,10 @@ namespace Papercut.EditorTools
                 }
                 GUILayout.FlexibleSpace();
                 string hint;
-                if (links.Active)
-                    hint = "Link mode: click a plate, then click what it affects (face panes only) — right-click a plate to clear its links";
+                if (spawnMode)
+                    hint = string.IsNullOrEmpty(studioMessage) ? StudioPane.SpawnHint : $"{studioMessage}  ·  {StudioPane.SpawnHint}";
+                else if (links.Active)
+                    hint = "Link mode: click a plate, then click each thing it affects (click a wired one to unwire it) · click empty space or Esc to release the plate · right-click a plate to clear its links";
                 else if (StudioPlacement.IsPolygonTerrain(palette.Armed))
                     hint = string.IsNullOrEmpty(studioMessage) ? StudioPane.DrawHint : $"{studioMessage}  ·  {StudioPane.DrawHint}";
                 else if (!string.IsNullOrEmpty(studioMessage))
@@ -646,6 +819,10 @@ namespace Papercut.EditorTools
 
             settingsCache ??= StudioFoldSettings.Read(sheet);
             foldModel.RememberCreasesEnabled = settingsCache.Value.RememberCreases;
+            foldModel.MinDepth = settingsCache.Value.MinDepth;
+            foldModel.AllowStacking = settingsCache.Value.AllowStacking;
+            if (obstaclesDirty)
+                RefreshObstacles(sheet);
             foldPane.Draw(foldRect, new StudioFoldPane.Context
             {
                 Stage = stage,
@@ -653,6 +830,8 @@ namespace Papercut.EditorTools
                 Scene = foldScene,
                 Settings = settingsCache.Value,
                 Sheet = sheet,
+                AboveRoot = sheet.Above,
+                ShowTerrain = ShowTerrain,
                 Palette = palette,
                 SnapIncrement = SnapIncrement,
                 LinksActive = links.Active,
@@ -723,6 +902,8 @@ namespace Papercut.EditorTools
             Stage = stage,
             Sheet = sheet,
             FaceRoot = face == SheetFace.Front ? sheet.Front : sheet.Back,
+            AboveRoot = sheet.Above,
+            AboveEditable = face == SheetFace.Front, // Above content is sheet-space content: edited where the sheet is seen from above (Aaron, 2026-09-28).
             Palette = palette,
             Links = links,
             SnapIncrement = SnapIncrement,
@@ -732,6 +913,12 @@ namespace Papercut.EditorTools
             MirrorX = face == SheetFace.Back && MirrorBackPane,
             XRayHeld = xrayHeld,
             Draft = draft,
+            SpawnMode = spawnMode,
+            ShowSpawn = face == SheetFace.Front, // The spawn is a Front point: the player starts on the Base (Bible §4).
+            SpawnBox = spawn.Box,
+            SpawnHasRoom = spawn.HasRoom,
+            SpawnIsDefault = spawn.IsDefault,
+            SpawnPlaced = point => OnSpawnPlaced(stage, point),
         };
 
         // ----- Keyboard -----
@@ -775,7 +962,11 @@ namespace Papercut.EditorTools
                 }
                 // First Escape disarms the link source, the second leaves link mode; outside link mode a
                 // half-drawn polygon is cancelled first (still armed), then the palette disarms.
-                if (links.Active)
+                if (spawnMode)
+                {
+                    spawnMode = false;
+                }
+                else if (links.Active)
                 {
                     if (links.Source != null)
                         links.Source = null;
@@ -872,7 +1063,7 @@ namespace Papercut.EditorTools
             var active = Selection.activeGameObject;
             if (active == null)
                 return null;
-            foreach (var root in new[] { sheet.Front, sheet.Back })
+            foreach (var root in new[] { sheet.Front, sheet.Back, sheet.Above })
             {
                 var element = StudioPlacement.ElementRootOf(active.transform, root);
                 if (element != null && StudioPlacement.CanEdit(element, sheet))

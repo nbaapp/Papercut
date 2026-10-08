@@ -8,9 +8,9 @@ namespace Papercut
     /// Elements (e.g. <see cref="TerrainRegion"/>) read <see cref="Abilities"/> and react to <see cref="Changed"/>.
     /// </summary>
     /// <remarks>
-    /// Editable in the Inspector during Play Mode so an ability can be toggled for testing. There is no mutator
-    /// yet because nothing grants abilities (unlockable pickups are outside the prototype); one is added with
-    /// the first pickup.
+    /// Editable in the Inspector during Play Mode so an ability can be toggled for testing; the field is the live
+    /// set, so it also shows what pickups have granted. <see cref="Grant"/> is the one mutator: an
+    /// <see cref="Unlockable"/> calls it when collected (the first pickup, 2026-09-17). Nothing revokes an ability.
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class PlayerAbilities : MonoBehaviour
@@ -27,6 +27,20 @@ namespace Papercut
 
         /// <summary>Raised after the ability set changes.</summary>
         public event Action Changed;
+
+        /// <summary>
+        /// Adds <paramref name="ability"/> (a flag or several) to the set and raises <see cref="Changed"/> at once.
+        /// Granting nothing new - <see cref="Ability.None"/>, or flags already held - is a no-op and raises nothing.
+        /// Safe to call from FixedUpdate: listeners may touch physics from Changed (unlike from OnValidate).
+        /// </summary>
+        public void Grant(Ability ability)
+        {
+            var granted = abilities | ability;
+            if (granted == abilities)
+                return;
+            abilities = granted;
+            Changed?.Invoke();
+        }
 
         void OnEnable()
         {

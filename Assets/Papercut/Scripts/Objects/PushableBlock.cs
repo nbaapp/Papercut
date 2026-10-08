@@ -4,8 +4,9 @@ using UnityEngine;
 namespace Papercut
 {
     /// <summary>
-    /// A block the player pushes along the cardinal axes by walking into it (Design Doc: pushable elements;
-    /// Bible §9 - built on Aaron's request, 2026-08-27). It is content of the sheet like terrain: a rect on the
+    /// A block the player takes hold of (<see cref="BlockPusher"/>: interact key down while touching a face) and
+    /// pushes or pulls along that face's axis (Design Doc: pushable elements; Bible §9 - built on Aaron's request,
+    /// 2026-08-27; hold-to-push-or-pull 2026-09-24). It is content of the sheet like terrain: a rect on the
     /// flat sheet plus a side, so folds cover, lift, expose and carry it exactly as they do the sheet under it,
     /// and the block's physical presence is the parts of it on a visible surface (<see cref="SheetPlacement"/>).
     /// Pushing moves the flat rect through the layer the pushed part lies on.
@@ -18,6 +19,7 @@ namespace Papercut
     /// sheet); leaving the sheet resets the block to where it started; blocks stop at walls, gated terrain, sheet
     /// edges and other blocks. A fold or unfold never changes the block's rect or face: it rides its piece of the
     /// sheet all the way around, so a block pushed onto a Flap and unfolded is on the Back at the mirrored place.
+    /// A block with Pushable off (the fixed Paperweight, 2026-09-14) is the same content that never moves.
     /// The transform is never rotated or scaled: every desk footprint is an axis-aligned rect, and the polygon
     /// collider paths and the drawing are computed explicitly in block-local space (sheet-local minus the desk
     /// centre; the block must sit unrotated and unscaled under a face root that is at identity - asserted).
@@ -26,11 +28,13 @@ namespace Papercut
     /// The picture on that mesh is the current frame of a <see cref="SketchAnimator"/> on a child (the hand-drawn
     /// line boil): the child's own SpriteRenderer shows the block in the editor and is switched off in play; the
     /// frame is mapped at its own scale with its pivot at the block's centre (<see cref="SpriteMapping"/>), so the
-    /// parts of the frame outside the block's rect are cut - author the rect to the drawing. The drawing is painted
-    /// with the paper (<see cref="DrawingUv"/>): laid out in the space of the face the block is on, so a Back-side
-    /// block reads exactly as every other Back content does, and a block that climbs a Flap is carried by the Flap's
-    /// reflection like the sheet under it (upright on an East/West Flap, upside-down on a North/South one, turned on
-    /// a corner one).
+    /// parts of the frame outside the block's rect are cut, and the parts of the rect outside the frame are bare
+    /// (<see cref="DrawingRect"/>: the mesh never samples past the image's edge) - author the rect to the drawing. The drawing is
+    /// <em>not</em> painted with the paper: it is laid out upright in Desk space around the block's centre wherever
+    /// its layer carries that centre (<see cref="DrawingUv"/>), so a block on a Flap, or revealed on the Back, reads
+    /// the same way up as on the flat Front - an object sits on the paper rather than being drawn on it (Aaron,
+    /// 2026-09-24, on a paperweight mirroring as it climbed a Flap: <em>"It shouldn't do that since its still on the
+    /// 'front' side"</em>; blocks too). Only the clip to the visible pieces follows the paper.
     /// </remarks>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(Rigidbody2D), typeof(BoxCollider2D), typeof(PolygonCollider2D))]
@@ -44,6 +48,10 @@ namespace Papercut
         const int DefaultLayer = 0;
 
         [Header("Pushing")]
+        [SerializeField, Tooltip("Off: the block never moves - fixed content of the sheet that still folds, covers, exposes and resets like any " +
+            "block, and is a wall to the player (no push slowdown) and to other blocks. The fixed Paperweight is a block with this off.")]
+        bool pushable = true;
+
         [SerializeField, Range(0f, 1f), Tooltip("The pusher's speed while pushing this block, as a fraction of their normal speed. 1 = no slowdown.")]
         float pushSpeedFactor = 0.5f;
 
@@ -93,6 +101,8 @@ namespace Papercut
         readonly PolygonMeshBuilder builder = new();
         readonly List<RaycastHit2D> hits = new();
         readonly List<SheetPlacement.Piece> pieces = new();
+        /// <summary>Sheet-space pieces of the universal walls that stop blocks; null until first asked (see <see cref="BlockWalls"/>).</summary>
+        List<ConvexPolygon> blockWalls;
 
         Rect startFlatRect;
         SheetFace startSide;
@@ -115,11 +125,17 @@ namespace Papercut
         /// <summary>True while some part of the block is on a visible surface (and so can be pushed).</summary>
         public bool IsVisible => ok && pieces.Count > 0;
 
+        /// <summary>
+        /// The parts of the block on a visible surface, where they lie (sheet-local), from the committed layers as of
+        /// the last placement. What a <see cref="Paperweight"/> holds folds away from.
+        /// </summary>
+        public IReadOnlyList<SheetPlacement.Piece> VisiblePieces => pieces;
+
         public float PushSpeedFactor => pushSpeedFactor;
 
-        /// <summary>True if <paramref name="pusher"/> holds what this block asks for (see Requires Ability).</summary>
+        /// <summary>True if this block can be pushed at all (see Pushable) and <paramref name="pusher"/> holds what it asks for (see Requires Ability).</summary>
         public bool CanBePushedBy(PlayerAbilities pusher)
-            => PushRules.CanPush(pusher != null ? pusher.Abilities : Ability.None, requiresAbility, pushAbility);
+            => PushRules.CanPush(pushable, pusher != null ? pusher.Abilities : Ability.None, requiresAbility, pushAbility);
 
         SheetLayers Layers => folds.Layers;
 
@@ -319,6 +335,37 @@ namespace Papercut
 
         // ----- IFoldConstraint -----
 
+        /// <summary>
+        /// A Flap may not carry this block under a universal wall that stops blocks (Aaron, 2026-09-28: refused like a
+        /// fold over the player). Judged on the stack after the fold, so a block on the face that is down, invisible
+        /// now, is refused when the fold would turn it face-up under a wall. The walls are gathered once: universal
+        /// regions are static authored content.
+        /// </summary>
+        public FoldRejection RefuseFold(in FoldEffect effect, SheetLayers after, int foldIndex)
+        {
+            if (!ok || !isActiveAndEnabled)
+                return FoldRejection.None;
+            return FoldLandingRules.CarriesUnderWall(flatRect, side, after, foldIndex, BlockWalls())
+                ? FoldRejection.CarriesBlockUnderWall
+                : FoldRejection.None;
+        }
+
+        /// <summary>Sheet-space pieces of every valid universal region of this sheet that stops blocks; gathered on first use, after every Awake.</summary>
+        IReadOnlyList<ConvexPolygon> BlockWalls()
+        {
+            if (blockWalls != null)
+                return blockWalls;
+            blockWalls = new List<ConvexPolygon>();
+            if (sheet.Above == null)
+                return blockWalls;
+            foreach (var region in sheet.Above.GetComponentsInChildren<TerrainRegion>(false))
+            {
+                if (region.IsValid && region.IsUniversal && region.StopsBlocks)
+                    blockWalls.AddRange(region.FaceLocalFootprint(sheet.Above).Pieces);
+            }
+            return blockWalls;
+        }
+
         public FoldRejection RefuseUnfold(int foldIndex)
         {
             if (!ok || glueLayer < 0)
@@ -349,8 +396,9 @@ namespace Papercut
 
         /// <summary>
         /// Moves the block <paramref name="distance"/> along <paramref name="cardinal"/> (a unit axis vector, desk
-        /// space) as far as nothing solid stops it. <paramref name="pusherBody"/> is ignored as an obstacle.
-        /// False if it could not move at all.
+        /// space) as far as nothing solid stops it. <paramref name="pusherBody"/> is ignored as an obstacle, so a
+        /// cardinal pointing at the pusher is a pull: the block follows them. Every fold rule (climb, descend,
+        /// roll across a crease, stop at gated terrain) is the same either way. False if it could not move at all.
         /// </summary>
         public bool TryPush(Vector2 cardinal, float distance, PlayerAbilities pusher, Rigidbody2D pusherBody, out float moved)
         {
@@ -368,7 +416,8 @@ namespace Papercut
             var oldDesk = SheetPlacement.DeskRect(flatRect, glue.ToDesk);
 
             // Obstacles: anything solid in the way, except the pusher, crease walls (the sheet continues around a
-            // crease) and whatever the block already overlaps (authoring rule: see the skin tooltip).
+            // crease), terrain that does not stop blocks (a player-only region, Aaron 2026-09-28) and whatever the
+            // block already overlaps (authoring rule: see the skin tooltip).
             var filter = new ContactFilter2D { useTriggers = false, useLayerMask = false };
             hits.Clear();
             body.Cast(cardinal, filter, hits, distance + skin);
@@ -376,6 +425,8 @@ namespace Papercut
             foreach (var hit in hits)
             {
                 if (hit.distance <= 0f || (pusherBody != null && hit.rigidbody == pusherBody) || hit.collider.GetComponent<CreaseWall>() != null)
+                    continue;
+                if (hit.collider.GetComponentInParent<TerrainRegion>() is { StopsBlocks: false })
                     continue;
                 nearest = Mathf.Min(nearest, hit.distance);
             }
@@ -571,7 +622,6 @@ namespace Papercut
                 return;
             }
             var frame = SpriteFrame.Of(sprite);
-            var drawnSide = side;
             block.Clear();
             block.SetTexture(BaseMap, sprite.texture);
             block.SetColor(BaseColor, tint);
@@ -584,8 +634,11 @@ namespace Papercut
                 {
                     if (piece.SurfaceLayer != surface)
                         continue;
-                    var inverse = stack.Layers[piece.LayerIndex].ToDesk.Inverse;
-                    builder.AddPolygon(piece.Desk, v => DrawingUv(frame, flatRect, drawnSide, inverse.Apply(v)), z, origin);
+                    // Upright in Desk space, the frame's pivot at the block's centre as this piece's layer carries it: an object
+                    // sits on the paper rather than being painted on it, so no Flap ever mirrors it (Aaron, 2026-09-24).
+                    var deskCentre = stack.Layers[piece.LayerIndex].ToDesk.Apply(flatRect.center);
+                    var polygon = piece.Desk.ClipToRect(DrawingRect(frame, deskCentre));
+                    builder.AddPolygon(polygon, v => DrawingUv(frame, deskCentre, v), z, origin);
                 }
                 var part = Part(s);
                 builder.Apply(part.filter.sharedMesh);
@@ -597,17 +650,22 @@ namespace Papercut
         }
 
         /// <summary>
-        /// Where a flat-sheet point of the block lands on its drawing frame: the frame's pivot sits at the block's
-        /// centre in the space of the face the block is on, so a Back-side block is laid out in Back-space (Bible
-        /// §6: Back content is authored in Back-space and the fold system mirrors it) exactly like a Back sprite,
-        /// and the layer's transform then carries it with the paper. Pure.
+        /// Where a sheet-local Desk point lands on the block's drawing frame: the frame's pivot sits at
+        /// <paramref name="deskCentre"/> (the block's centre as its layer carries it) and the frame is laid out
+        /// upright in Desk space whatever face the block is on and whatever Flap it rides - an object sits on the
+        /// paper rather than being painted on it, so it is never mirrored (Aaron, 2026-09-24). Pure.
         /// </summary>
-        public static Vector2 DrawingUv(in SpriteFrame frame, Rect flatRect, SheetFace side, Vector2 flat)
-        {
-            var back = side == SheetFace.Back;
-            var anchor = back ? SheetGeometry.BackToFront(flatRect.center) : flatRect.center;
-            return SpriteMapping.Uv(frame, anchor, back ? SheetGeometry.BackToFront(flat) : flat);
-        }
+        public static Vector2 DrawingUv(in SpriteFrame frame, Vector2 deskCentre, Vector2 desk)
+            => SpriteMapping.Uv(frame, deskCentre, desk);
+
+        /// <summary>
+        /// The sheet-local Desk rect the drawing frame covers when <see cref="DrawingUv"/> lays it out: the frame at its
+        /// own scale, upright, with its pivot at <paramref name="deskCentre"/>. The drawn mesh is clipped to it, so the
+        /// texture is never sampled past the frame's edge (a clamped edge would repeat as a bar wherever the block's
+        /// rect is wider than the image) and a frame smaller than the rect leaves the rest of the rect bare. Pure.
+        /// </summary>
+        public static Rect DrawingRect(in SpriteFrame frame, Vector2 deskCentre)
+            => new(deskCentre - frame.Pivot / frame.PixelsPerUnit, frame.Rect.size / frame.PixelsPerUnit);
 
         Vector2 WorldCentre()
         {

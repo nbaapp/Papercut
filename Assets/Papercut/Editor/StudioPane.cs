@@ -26,6 +26,10 @@ namespace Papercut.EditorTools
             public PrefabStage Stage;
             public Sheet Sheet;
             public Transform FaceRoot;
+            /// <summary>The sheet's Above root (universal regions, Aaron 2026-09-28): drawn in both panes - mirrored in the Back pane, as it lies over the Back - and edited in the Front pane only (<see cref="AboveEditable"/>).</summary>
+            public Transform AboveRoot;
+            /// <summary>True in the Front pane: Above content can be placed, picked, moved, resized and deleted here. The Back pane draws it read-only (Aaron, 2026-09-28).</summary>
+            public bool AboveEditable;
             public StudioPalette Palette;
             public StudioLinkState Links;
             public float SnapIncrement;
@@ -38,6 +42,18 @@ namespace Papercut.EditorTools
             public bool XRayHeld;
             /// <summary>The polygon terrain outline being drawn, shared by both face panes (window state).</summary>
             public StudioPolygonDraft Draft;
+
+            /// <summary>Spawn mode (the toolbar toggle): a left click sets the playtest spawn instead of selecting/placing.</summary>
+            public bool SpawnMode;
+            /// <summary>Draw the spawn marker in this pane - the Front pane only; the spawn is a Front point (Bible §4: the player starts on the Base).</summary>
+            public bool ShowSpawn;
+            /// <summary>The player's box at the spawn, face-local (Front space).</summary>
+            public Rect SpawnBox;
+            public bool SpawnHasRoom;
+            /// <summary>No spawn has been set for this sheet yet: the marker sits at the centre.</summary>
+            public bool SpawnIsDefault;
+            /// <summary>Called with the (snapped) sheet-local point of a Spawn-mode click in the Front pane.</summary>
+            public System.Action<Vector2> SpawnPlaced;
         }
 
         const float CameraDistance = 5f;
@@ -46,6 +62,8 @@ namespace Papercut.EditorTools
         const float ZoomStep = 0.05f;
         const float HandleHitPixels = 7f;
         const float HandleDrawPixels = 4f;
+        /// <summary>Dash length of a resting-absent element's outline; long enough to read as dotted at any zoom.</summary>
+        const float DottedDashPixels = 6f;
         static readonly Color BackgroundColor = new(0.22f, 0.2f, 0.18f, 1f);
         static readonly Color SheetOutlineColor = new(1f, 1f, 1f, 0.9f);
         static readonly Color WallColor = new(0.25f, 0.25f, 0.25f, 1f);
@@ -53,8 +71,17 @@ namespace Papercut.EditorTools
         /// <summary>Terrain-view fills: translucent so the map art under a box stays readable.</summary>
         static readonly Color WallFill = new(0.25f, 0.25f, 0.25f, 0.35f);
         static readonly Color GatedFill = new(0.25f, 0.45f, 0.9f, 0.35f);
+        /// <summary>A universal region (above the sheet): teal, Aaron's choice over Water's blue (2026-09-28).</summary>
+        static readonly Color UniversalColor = new(0.1f, 0.75f, 0.7f, 1f);
+        /// <summary>Shared with the fold pane so the two views of a universal region cannot drift apart.</summary>
+        internal static readonly Color UniversalFill = new(0.1f, 0.75f, 0.7f, 0.35f);
+        /// <summary>A filter region (blocks blocks, not the player): violet.</summary>
+        static readonly Color FilterColor = new(0.6f, 0.35f, 0.85f, 1f);
+        static readonly Color FilterFill = new(0.6f, 0.35f, 0.85f, 0.35f);
         static readonly Color PlateColor = new(0.95f, 0.6f, 0.15f, 1f);
         static readonly Color BlockColor = new(0.6f, 0.4f, 0.2f, 1f);
+        /// <summary>An unlockable pickup (the Power Croissant): its pickup zone.</summary>
+        static readonly Color UnlockableColor = new(0.95f, 0.8f, 0.25f, 1f);
         static readonly Color OtherColor = new(0.8f, 0.8f, 0.8f, 1f);
         /// <summary>A prop (art only, no collision of its own): its sprite rect, so it can be picked and moved.</summary>
         static readonly Color PropColor = new(0.55f, 0.75f, 0.4f, 1f);
@@ -64,6 +91,11 @@ namespace Papercut.EditorTools
         /// <summary>An outline that is not a simple polygon (self-crossing): Play Mode would refuse it.</summary>
         static readonly Color InvalidColor = new(1f, 0.3f, 0.25f, 1f);
         static readonly Color MidpointColor = new(1f, 0.9f, 0.2f, 0.6f);
+        /// <summary>The playtest spawn marker: the player's box where a playtest starts (red through InvalidColor when there is no room).</summary>
+        static readonly Color SpawnColor = new(0.3f, 1f, 0.4f, 1f);
+
+        /// <summary>Toolbar hint while Spawn mode is on.</summary>
+        public const string SpawnHint = "Spawn mode: click in the Front pane where the player starts a playtest · Esc to leave";
 
         /// <summary>Toolbar hint while polygon terrain is armed.</summary>
         public const string DrawHint = "Draw: click to add points · click the first point or Enter to finish · Backspace removes the last point · Esc/right-click cancels";
@@ -103,16 +135,49 @@ namespace Papercut.EditorTools
         /// <summary>Elements labelled this repaint, so an element with several colliders gets one label.</summary>
         readonly HashSet<GameObject> labelled = new();
         readonly List<GameObject> scratchProps = new();
-        readonly Dictionary<TerrainRegion, bool> gatedCache = new();
+        readonly Dictionary<TerrainRegion, RegionKind> regionKindCache = new();
+        /// <summary>Roots this pane edits, for one draw: the face root, then Above when this pane edits it (Above last: it wins a pick tie, being on top).</summary>
+        readonly List<Transform> editRoots = new();
         readonly Dictionary<GameObject, List<StudioLinks.Slot>> linkCache = new();
+        /// <summary>Per element: rests absent (a Gate (Off) — `ObjectPresence.startsAbsent`), so it is drawn dotted with an "(off)" label.</summary>
+        readonly Dictionary<GameObject, bool> restsAbsentCache = new();
 
         public StudioPane(SheetFace face) => this.face = face;
 
         /// <summary>Drops cached per-element overlay data; the window calls this when objects change.</summary>
         public void InvalidateOverlayCache()
         {
-            gatedCache.Clear();
+            regionKindCache.Clear();
             linkCache.Clear();
+            restsAbsentCache.Clear();
+        }
+
+        /// <summary>The roots this pane edits: the face root and, in the Front pane, the Above root (listed last).</summary>
+        IReadOnlyList<Transform> EditRoots(in Context ctx)
+        {
+            editRoots.Clear();
+            if (ctx.FaceRoot != null)
+                editRoots.Add(ctx.FaceRoot);
+            if (ctx.AboveEditable && ctx.AboveRoot != null)
+                editRoots.Add(ctx.AboveRoot);
+            return editRoots;
+        }
+
+        /// <summary>The root an editable element of this pane lives under: Above for a universal region, else the face root.</summary>
+        static Transform RootOf(in Context ctx, GameObject element)
+            => element != null && ctx.AboveRoot != null && element.transform.IsChildOf(ctx.AboveRoot) ? ctx.AboveRoot : ctx.FaceRoot;
+
+        /// <summary>Above content is in sheet space; under the Back pane it is seen from beneath, mirrored (Bible §6: Back point (x, y) lies beneath sheet point (−x, y)).</summary>
+        Vector2 AboveToPane(Vector2 sheetLocal) => face == SheetFace.Back ? SheetGeometry.BackToFront(sheetLocal) : sheetLocal;
+
+        ConvexPolygon AboveToPane(ConvexPolygon piece) => face == SheetFace.Back ? piece.MirroredX() : piece;
+
+        void AboveToPane(List<Vector2> outline)
+        {
+            if (face != SheetFace.Back)
+                return;
+            for (int i = 0; i < outline.Count; i++)
+                outline[i] = SheetGeometry.BackToFront(outline[i]);
         }
 
         List<StudioLinks.Slot> SlotsOf(GameObject element)
@@ -221,6 +286,7 @@ namespace Papercut.EditorTools
             DrawOverlays(ctx);
             DrawGhost(ctx);
             DrawDraft(ctx);
+            DrawSpawn(ctx);
         }
 
         // ----- Rendering -----
@@ -281,6 +347,7 @@ namespace Papercut.EditorTools
                 xrayCameraObject = new GameObject($"Sheet Studio {face} X-Ray Camera") { hideFlags = HideFlags.HideAndDontSave };
                 xrayCamera = xrayCameraObject.AddComponent<Camera>();
                 xrayCamera.enabled = false;
+                FaceCameraRenderer.Use(xrayCamera);
                 xrayCamera.orthographic = true;
                 xrayCamera.nearClipPlane = 0.1f;
                 xrayCamera.farClipPlane = CameraDistance * 2f;
@@ -313,6 +380,7 @@ namespace Papercut.EditorTools
                 cameraObject = new GameObject($"Sheet Studio {face} Camera") { hideFlags = HideFlags.HideAndDontSave };
                 paneCamera = cameraObject.AddComponent<Camera>();
                 paneCamera.enabled = false;
+                FaceCameraRenderer.Use(paneCamera);
                 paneCamera.orthographic = true;
                 paneCamera.nearClipPlane = 0.1f;
                 paneCamera.farClipPlane = CameraDistance * 2f;
@@ -358,39 +426,68 @@ namespace Papercut.EditorTools
             if (ctx.FaceRoot == null)
                 return;
 
-            if (ctx.ShowTerrain)
+            // A universal fill is main-camera content the pane camera never renders, so while the sheet shows collision
+            // (the game would draw it) the universal regions are filled here even with the Terrain overlay off.
+            var showCollision = ctx.Sheet != null && ctx.Sheet.ShowCollision;
+            if (ctx.ShowTerrain || showCollision)
             {
-                foreach (var region in ctx.FaceRoot.GetComponentsInChildren<TerrainRegion>(true))
+                // The face's regions, then the universal regions above the sheet (both panes; mirrored under the Back).
+                foreach (var root in new[] { ctx.FaceRoot, ctx.AboveRoot })
                 {
-                    // A box is one piece; a polygon region fills piece by piece (the fill primitive is convex-only).
-                    if (!StudioPlacement.TryGetRegionPieces(region, ctx.FaceRoot, scratchPieces))
-                    {
-                        // A polygon region whose outline cannot be decomposed is shown red rather than vanishing (code review S4).
-                        if (StudioPlacement.IsPolygonTerrain(region.gameObject) && StudioPlacement.GetOutline(region.gameObject, ctx.FaceRoot, scratchOutline))
-                            DrawPolyline(InvalidColor, 2f, scratchOutline.ToArray());
+                    if (root == null)
                         continue;
+                    var above = root == ctx.AboveRoot;
+                    if (!ctx.ShowTerrain && !above)
+                        continue; // Face fills are already in the pane texture through the face camera.
+                    foreach (var region in root.GetComponentsInChildren<TerrainRegion>(true))
+                    {
+                        // A box is one piece; a polygon region fills piece by piece (the fill primitive is convex-only).
+                        if (!StudioPlacement.TryGetRegionPieces(region, root, scratchPieces))
+                        {
+                            // A polygon region whose outline cannot be decomposed is shown red rather than vanishing (code review S4).
+                            if (StudioPlacement.IsPolygonTerrain(region.gameObject) && StudioPlacement.GetOutline(region.gameObject, root, scratchOutline))
+                            {
+                                if (above) AboveToPane(scratchOutline);
+                                DrawPolyline(InvalidColor, 2f, scratchOutline.ToArray());
+                            }
+                            continue;
+                        }
+                        var fill = FillFor(region);
+                        foreach (var piece in scratchPieces)
+                            DrawFill(fill, Points(above ? AboveToPane(piece) : piece));
                     }
-                    var fill = HasRequiredAbility(region) ? GatedFill : WallFill;
-                    foreach (var piece in scratchPieces)
-                        DrawFill(fill, Points(piece));
                 }
             }
 
             if (ctx.ShowOverlays)
             {
                 labelled.Clear();
-                foreach (var collider in ctx.FaceRoot.GetComponentsInChildren<Collider2D>(true))
+                foreach (var root in new[] { ctx.FaceRoot, ctx.AboveRoot })
                 {
-                    if (!StudioPlacement.TryGetFaceLocalOutline(collider, ctx.FaceRoot, scratchOutline))
+                    if (root == null)
                         continue;
-                    var element = StudioPlacement.ElementRootOf(collider.transform, ctx.FaceRoot);
-                    // A polygon region that would refuse itself at Play is red whether or not it is selected (code review S1).
-                    var invalid = element != null && StudioPlacement.IsPolygonTerrain(element) && !StudioPlacement.IsValidOutline(element, ctx.FaceRoot, out _);
-                    DrawPolyline(invalid ? InvalidColor : ColorFor(element), 2f, scratchOutline.ToArray());
+                    var above = root == ctx.AboveRoot;
+                    foreach (var collider in root.GetComponentsInChildren<Collider2D>(true))
+                    {
+                        if (!StudioPlacement.TryGetFaceLocalOutline(collider, root, scratchOutline))
+                            continue;
+                        if (above)
+                            AboveToPane(scratchOutline);
+                        var element = StudioPlacement.ElementRootOf(collider.transform, root);
+                        // A polygon region that would refuse itself at Play is red whether or not it is selected (code review S1).
+                        var invalid = element != null && StudioPlacement.IsPolygonTerrain(element) && !StudioPlacement.IsValidOutline(element, root, out _);
+                        // A region whose root disagrees with its Universal flag would refuse itself at Play too.
+                        invalid |= element != null && element.TryGetComponent(out TerrainRegion region) && KindOf(region).Universal != above;
+                        // An element that rests absent (a Gate (Off)) is there only once a plate switches it: dotted, so it reads as "not yet".
+                        if (!invalid && element != null && RestsAbsent(element))
+                            DrawDottedPolyline(ColorFor(element), DottedDashPixels, scratchOutline.ToArray());
+                        else
+                            DrawPolyline(invalid ? InvalidColor : ColorFor(element), 2f, scratchOutline.ToArray());
 
-                    // One label per element, above its whole footprint (an element's colliders may sit on children).
-                    if (ctx.ShowLabels && element != null && labelled.Add(element))
-                        DrawLabel(element, ctx);
+                        // One label per element, above its whole footprint (an element's colliders may sit on children).
+                        if (ctx.ShowLabels && element != null && labelled.Add(element))
+                            DrawLabel(element, root, above, ctx);
+                    }
                 }
 
                 // Props have no collider: their sprite rect is the outline (Aaron, 2026-09-10).
@@ -410,12 +507,13 @@ namespace Papercut.EditorTools
             var selected = SelectedElementIn(ctx);
             if (selected == null)
                 return;
+            var selectedRoot = RootOf(ctx, selected);
             foreach (var collider in selected.GetComponentsInChildren<Collider2D>(true))
             {
-                if (StudioPlacement.TryGetFaceLocalOutline(collider, ctx.FaceRoot, scratchOutline))
+                if (StudioPlacement.TryGetFaceLocalOutline(collider, selectedRoot, scratchOutline))
                     DrawPolyline(SelectionColor, 3f, scratchOutline.ToArray());
             }
-            if (StudioPlacement.TryGetPropOutline(selected, ctx.FaceRoot, scratchOutline))
+            if (StudioPlacement.TryGetPropOutline(selected, selectedRoot, scratchOutline))
                 DrawPolyline(SelectionColor, 3f, scratchOutline.ToArray());
             if (StudioPlacement.IsPolygonTerrain(selected))
             {
@@ -424,7 +522,7 @@ namespace Papercut.EditorTools
             }
             if (StudioPlacement.IsResizable(selected))
             {
-                var rect = StudioPlacement.FaceLocalRect(selected, ctx.FaceRoot);
+                var rect = StudioPlacement.FaceLocalRect(selected, selectedRoot);
                 foreach (var handle in HandlePoints(rect))
                 {
                     var gui = view.SheetLocalToPane(handle);
@@ -451,14 +549,15 @@ namespace Papercut.EditorTools
                 var element = ctx.FaceRoot.GetChild(i).gameObject;
                 foreach (var slot in SlotsOf(element))
                 {
-                    if (slot.Target == null)
-                        continue;
-                    var from = (Vector2)element.transform.localPosition;
-                    var targetRoot = StudioPlacement.ElementRootOf(slot.Target.transform, ctx.FaceRoot);
-                    if (targetRoot != null)
-                        DrawWire(from, targetRoot.transform.localPosition);
-                    else
-                        DrawLinkMarker(from, $"→ {slot.Target.name} (other face)");
+                    foreach (var target in slot.Targets)
+                    {
+                        var from = (Vector2)element.transform.localPosition;
+                        var targetRoot = StudioPlacement.ElementRootOf(target.transform, ctx.FaceRoot);
+                        if (targetRoot != null)
+                            DrawWire(from, targetRoot.transform.localPosition);
+                        else
+                            DrawLinkMarker(from, $"→ {target.name} (other face)");
+                    }
                 }
             }
 
@@ -470,11 +569,12 @@ namespace Papercut.EditorTools
                     var element = otherRoot.GetChild(i).gameObject;
                     foreach (var slot in SlotsOf(element))
                     {
-                        if (slot.Target == null)
-                            continue;
-                        var targetRoot = StudioPlacement.ElementRootOf(slot.Target.transform, ctx.FaceRoot);
-                        if (targetRoot != null)
-                            DrawLinkMarker(targetRoot.transform.localPosition, $"← {element.name} (other face)");
+                        foreach (var target in slot.Targets)
+                        {
+                            var targetRoot = StudioPlacement.ElementRootOf(target.transform, ctx.FaceRoot);
+                            if (targetRoot != null)
+                                DrawLinkMarker(targetRoot.transform.localPosition, $"← {element.name} (other face)");
+                        }
                     }
                 }
             }
@@ -516,6 +616,8 @@ namespace Papercut.EditorTools
                 return;
 
             var at = StudioPlacement.Snap(view.PaneToSheetLocal(mouse), ctx.SnapIncrement);
+            if (StudioPlacement.IsUniversal(armed) && StudioPlacement.TargetRoot(armed, ctx.Sheet, ctx.FaceRoot, ctx.AboveEditable, out _) == null)
+                return; // A universal region cannot be placed from this pane; the click says why.
             if (StudioPlacement.IsPolygonTerrain(armed))
             {
                 // Drawn point by point: the next vertex, with the magnet applied, is the ghost.
@@ -592,9 +694,10 @@ namespace Papercut.EditorTools
         /// <summary>Vertex handles (squares) and edge-midpoint handles (smaller) of the selected polygon region; the outline in red while it would refuse itself.</summary>
         void DrawVertexHandles(GameObject selected, in Context ctx)
         {
-            if (!StudioPlacement.GetOutline(selected, ctx.FaceRoot, scratchOutline))
+            var root = RootOf(ctx, selected);
+            if (!StudioPlacement.GetOutline(selected, root, scratchOutline))
                 return;
-            if (!StudioPlacement.IsValidOutline(selected, ctx.FaceRoot, out _))
+            if (!StudioPlacement.IsValidOutline(selected, root, out _))
                 DrawPolyline(InvalidColor, 3f, scratchOutline.ToArray());
             for (int i = 0; i < scratchOutline.Count; i++)
             {
@@ -622,7 +725,7 @@ namespace Papercut.EditorTools
         Vector2 SnapWithMagnet(Vector2 sheetLocal, in Context ctx, GameObject exclude)
         {
             var snapped = StudioPlacement.Snap(sheetLocal, ctx.SnapIncrement);
-            StudioPlacement.MagnetTargets(ctx.FaceRoot, exclude, scratchTargets);
+            StudioPlacement.MagnetTargets(EditRoots(ctx), exclude, scratchTargets); // Face and universal regions magnet to each other in the Front pane.
             return StudioPlacement.Magnet(snapped, scratchTargets, HandleHitPixels / view.Zoom);
         }
 
@@ -649,11 +752,44 @@ namespace Papercut.EditorTools
             Handles.DrawAAPolyLine(width, points);
         }
 
-        void DrawLabel(GameObject element, in Context ctx)
+        /// <summary>A closed outline drawn dotted (screen-space dashes), for an element that is not there until switched.</summary>
+        void DrawDottedPolyline(Color color, float dashPixels, params Vector2[] sheetLocalPoints)
         {
-            var footprint = StudioPlacement.AuthoredFootprint(element, ctx.FaceRoot);
-            var gui = view.SheetLocalToPane(new Vector2(footprint.center.x, footprint.yMax));
-            GUI.Label(new Rect(gui.x - 60f, gui.y - 18f, 120f, 16f), element.name, CentredMiniLabel);
+            if (sheetLocalPoints.Length < 2)
+                return;
+            Handles.color = color;
+            for (int i = 0; i < sheetLocalPoints.Length; i++)
+            {
+                var a = view.SheetLocalToPane(sheetLocalPoints[i]);
+                var b = view.SheetLocalToPane(sheetLocalPoints[(i + 1) % sheetLocalPoints.Length]);
+                Handles.DrawDottedLine(new Vector3(a.x, a.y, 0f), new Vector3(b.x, b.y, 0f), dashPixels);
+            }
+        }
+
+        void DrawLabel(GameObject element, in Context ctx) => DrawLabel(element, ctx.FaceRoot, false, ctx);
+
+        void DrawLabel(GameObject element, Transform root, bool above, in Context ctx)
+        {
+            var footprint = StudioPlacement.AuthoredFootprint(element, root);
+            var top = new Vector2(footprint.center.x, footprint.yMax);
+            if (above)
+                top = AboveToPane(top);
+            var gui = view.SheetLocalToPane(top);
+            var text = RestsAbsent(element) ? $"{element.name} (off)" : element.name;
+            GUI.Label(new Rect(gui.x - 60f, gui.y - 18f, 120f, 16f), text, CentredMiniLabel);
+        }
+
+        bool RestsAbsent(GameObject element)
+        {
+            // Serialized field read, cached per element like the gated-terrain read; dropped by InvalidateOverlayCache.
+            if (restsAbsentCache.TryGetValue(element, out var absent))
+                return absent;
+            absent = false;
+            var presence = element.GetComponentInChildren<ObjectPresence>(true);
+            if (presence != null)
+                absent = new SerializedObject(presence).FindProperty("startsAbsent").boolValue;
+            restsAbsentCache[element] = absent;
+            return absent;
         }
 
         static GUIStyle centredMiniLabel;
@@ -676,27 +812,84 @@ namespace Papercut.EditorTools
                 return OtherColor;
             var region = element.GetComponentInChildren<TerrainRegion>(true); // An element's regions may be children of its root.
             if (region != null)
-                return HasRequiredAbility(region) ? GatedColor : WallColor;
+            {
+                var kind = KindOf(region);
+                return kind.Universal ? UniversalColor : kind.Filter ? FilterColor : kind.Gated ? GatedColor : WallColor;
+            }
             if (element.GetComponent<PressurePlate>() != null)
                 return PlateColor;
             if (element.GetComponent<PushableBlock>() != null)
                 return BlockColor;
+            if (element.GetComponent<Unlockable>() != null)
+                return UnlockableColor;
             if (StudioPlacement.IsProp(element))
                 return PropColor;
             return OtherColor;
         }
 
-        bool HasRequiredAbility(TerrainRegion region)
+        /// <summary>A region's kind from its serialized data: gated (needs an ability), a filter (not solid to the player), universal (above the sheet).</summary>
+        readonly struct RegionKind
         {
-            // Serialized field read: a region with a required ability is gated (water-blue), a plain one a
-            // wall. Cached per region — a SerializedObject per region per repaint is real garbage on a
-            // 40-region sheet — and dropped by InvalidateOverlayCache when anything changes.
-            if (gatedCache.TryGetValue(region, out var gated))
-                return gated;
+            public readonly bool Gated;
+            public readonly bool Filter;
+            public readonly bool Universal;
+
+            public RegionKind(bool gated, bool filter, bool universal)
+            {
+                Gated = gated;
+                Filter = filter;
+                Universal = universal;
+            }
+        }
+
+        RegionKind KindOf(TerrainRegion region)
+        {
+            // Serialized field reads: a region with a required ability is gated (water-blue), one not solid to the
+            // player a filter (violet), one above the sheet universal (teal), a plain one a wall. Cached per region — a
+            // SerializedObject per region per repaint is real garbage on a 40-region sheet — and dropped by
+            // InvalidateOverlayCache when anything changes.
+            if (regionKindCache.TryGetValue(region, out var kind))
+                return kind;
             var serialized = new SerializedObject(region);
-            gated = serialized.FindProperty("requiredAbility").intValue != 0;
-            gatedCache[region] = gated;
-            return gated;
+            var blocks = (TerrainBlocks)serialized.FindProperty("blocks").intValue;
+            kind = new RegionKind(
+                gated: serialized.FindProperty("requiredAbility").intValue != 0,
+                filter: (blocks & TerrainBlocks.Player) == 0,
+                universal: serialized.FindProperty("universal").boolValue);
+            regionKindCache[region] = kind;
+            return kind;
+        }
+
+        Color FillFor(TerrainRegion region)
+        {
+            var kind = KindOf(region);
+            return kind.Universal ? UniversalFill : kind.Filter ? FilterFill : kind.Gated ? GatedFill : WallFill;
+        }
+
+        /// <summary>
+        /// The playtest spawn: the player's box where a playtest starts, drawn last so no element hides it. Not an
+        /// element - it cannot be picked, dragged, deleted or linked; Spawn mode's click is the one way to move it.
+        /// </summary>
+        void DrawSpawn(in Context ctx)
+        {
+            if (!ctx.ShowSpawn)
+                return;
+            var box = ctx.SpawnBox;
+            var colour = ctx.SpawnHasRoom ? SpawnColor : InvalidColor;
+            var corners = new[]
+            {
+                new Vector2(box.xMin, box.yMin), new Vector2(box.xMax, box.yMin),
+                new Vector2(box.xMax, box.yMax), new Vector2(box.xMin, box.yMax),
+            };
+            DrawPolyline(colour, ctx.SpawnMode ? 3f : 2f, corners);
+            var centre = view.SheetLocalToPane(box.center);
+            var cross = HandleDrawPixels;
+            Handles.color = colour;
+            Handles.DrawAAPolyLine(2f, new Vector3(centre.x - cross, centre.y), new Vector3(centre.x + cross, centre.y));
+            Handles.DrawAAPolyLine(2f, new Vector3(centre.x, centre.y - cross), new Vector3(centre.x, centre.y + cross));
+            var label = !ctx.SpawnHasRoom ? "Spawn (no room)" : ctx.SpawnIsDefault ? "Spawn (default)" : "Spawn";
+            var gui = view.SheetLocalToPane(new Vector2(box.center.x, box.yMax));
+            GUI.Label(new Rect(gui.x - 60f, gui.y - 18f, 120f, 16f), label, CentredMiniLabel);
         }
 
         // ----- Input -----
@@ -754,6 +947,18 @@ namespace Papercut.EditorTools
             GUIUtility.keyboardControl = 0;
             var sheetLocal = view.PaneToSheetLocal(e.mousePosition);
 
+            if (ctx.SpawnMode)
+            {
+                // Spawn mode is exclusive with link mode and placement (the window keeps them so), so a click
+                // can only mean "start here" - and only on the Front, where the player starts (Bible §4).
+                if (ctx.ShowSpawn)
+                    ctx.SpawnPlaced?.Invoke(StudioPlacement.Snap(sheetLocal, ctx.SnapIncrement));
+                else
+                    Report("The spawn is a Front point: click in the Front pane.");
+                e.Use();
+                return;
+            }
+
             if (ctx.Links is { Active: true })
             {
                 OnLinkLeftClick(e, ctx, sheetLocal);
@@ -767,7 +972,14 @@ namespace Papercut.EditorTools
                     OnDrawClick(e, ctx, sheetLocal);
                     return;
                 }
-                var placed = StudioPlacement.Place(ctx.Palette.Armed, ctx.FaceRoot, face, sheetLocal, ctx.SnapIncrement);
+                var root = StudioPlacement.TargetRoot(ctx.Palette.Armed, ctx.Sheet, ctx.FaceRoot, ctx.AboveEditable, out var refusal);
+                if (root == null)
+                {
+                    Report(refusal);
+                    e.Use();
+                    return;
+                }
+                var placed = StudioPlacement.Place(ctx.Palette.Armed, root, face, sheetLocal, ctx.SnapIncrement);
                 if (placed != null)
                     Selection.activeGameObject = placed;
                 e.Use();
@@ -775,8 +987,9 @@ namespace Papercut.EditorTools
             }
 
             var selected = SelectedElementIn(ctx);
+            var selectedRoot = RootOf(ctx, selected);
             if (selected != null && StudioPlacement.IsPolygonTerrain(selected)
-                && StudioPlacement.GetOutline(selected, ctx.FaceRoot, scratchOutline))
+                && StudioPlacement.GetOutline(selected, selectedRoot, scratchOutline))
             {
                 var vertex = HitVertex(scratchOutline, e.mousePosition);
                 if (vertex >= 0)
@@ -791,7 +1004,7 @@ namespace Papercut.EditorTools
                     // Insert on the edge and keep dragging the new vertex; a revert undoes the insert too.
                     BeginEditDrag(DragKind.Vertex);
                     var mid = (scratchOutline[edge] + scratchOutline[(edge + 1) % scratchOutline.Count]) * 0.5f;
-                    StudioPlacement.InsertVertex(selected, ctx.FaceRoot, edge, mid, 0f);
+                    StudioPlacement.InsertVertex(selected, selectedRoot, edge, mid, 0f);
                     dragVertex = edge + 1;
                     e.Use();
                     return;
@@ -799,7 +1012,7 @@ namespace Papercut.EditorTools
             }
             if (selected != null && StudioPlacement.IsResizable(selected))
             {
-                var rect = StudioPlacement.FaceLocalRect(selected, ctx.FaceRoot);
+                var rect = StudioPlacement.FaceLocalRect(selected, selectedRoot);
                 foreach (var handle in HandleIds())
                 {
                     var gui = view.SheetLocalToPane(HandlePoint(rect, handle));
@@ -814,7 +1027,7 @@ namespace Papercut.EditorTools
                 }
             }
 
-            var picked = StudioPlacement.PickElement(ctx.FaceRoot, ctx.Sheet, sheetLocal);
+            var picked = StudioPlacement.PickElement(EditRoots(ctx), ctx.Sheet, sheetLocal);
             Selection.activeGameObject = picked;
             if (picked != null)
             {
@@ -862,7 +1075,7 @@ namespace Papercut.EditorTools
                 {
                     var selected = SelectedElementIn(ctx);
                     if (selected != null)
-                        StudioPlacement.SetVertex(selected, ctx.FaceRoot, dragVertex, SnapWithMagnet(view.PaneToSheetLocal(e.mousePosition), ctx, selected), 0f);
+                        StudioPlacement.SetVertex(selected, RootOf(ctx, selected), dragVertex, SnapWithMagnet(view.PaneToSheetLocal(e.mousePosition), ctx, selected), 0f);
                     e.Use();
                     break;
                 }
@@ -886,6 +1099,11 @@ namespace Papercut.EditorTools
             if (draft.IsActive && draft.Face != face)
             {
                 Report($"Finish or cancel the polygon on the {draft.Face} face first.");
+                return;
+            }
+            if (!draft.IsActive && StudioPlacement.TargetRoot(armed, ctx.Sheet, ctx.FaceRoot, ctx.AboveEditable, out var refusal) == null)
+            {
+                Report(refusal);
                 return;
             }
             if (!draft.IsActive)
@@ -958,13 +1176,14 @@ namespace Papercut.EditorTools
 
             // Right-click on a vertex handle of the selected polygon region removes that vertex.
             var selected = SelectedElementIn(ctx);
+            var selectedRoot = RootOf(ctx, selected);
             if (selected == null || !StudioPlacement.IsPolygonTerrain(selected)
-                || !StudioPlacement.GetOutline(selected, ctx.FaceRoot, scratchOutline))
+                || !StudioPlacement.GetOutline(selected, selectedRoot, scratchOutline))
                 return;
             var vertex = HitVertex(scratchOutline, e.mousePosition);
             if (vertex < 0)
                 return;
-            Report(StudioPlacement.TryRemoveVertex(selected, ctx.FaceRoot, vertex, out var reason) ? string.Empty : $"Cannot remove that vertex: {reason}.");
+            Report(StudioPlacement.TryRemoveVertex(selected, selectedRoot, vertex, out var reason) ? string.Empty : $"Cannot remove that vertex: {reason}.");
             e.Use();
         }
 
@@ -1001,7 +1220,7 @@ namespace Papercut.EditorTools
         void EndVertexDrag(in Context ctx)
         {
             var selected = SelectedElementIn(ctx);
-            if (selected == null || StudioPlacement.IsValidOutline(selected, ctx.FaceRoot, out var reason))
+            if (selected == null || StudioPlacement.IsValidOutline(selected, RootOf(ctx, selected), out var reason))
                 return;
             Undo.RevertAllDownToGroup(dragUndoGroup);
             Report($"Reverted: {reason}.");
@@ -1032,8 +1251,10 @@ namespace Papercut.EditorTools
 
         /// <summary>
         /// Link mode click: a plate (anything with effect target slots) becomes the armed source; any other
-        /// element wires the source's slot to it (a popup picks the slot when there are several). The source
-        /// is shared window state, so the target may be clicked in the other pane (cross-face wiring).
+        /// element is wired into the source's slot — or unwired, if it already is (a popup picks the slot when
+        /// there are several). The source stays armed so several gates can be clicked in a row (Aaron,
+        /// 2026-09-21); a click on empty space releases it. The source is shared window state, so targets may
+        /// be clicked in the other pane (cross-face wiring).
         /// </summary>
         void OnLinkLeftClick(Event e, in Context ctx, Vector2 sheetLocal)
         {
@@ -1041,7 +1262,10 @@ namespace Papercut.EditorTools
             var picked = StudioPlacement.PickElement(ctx.FaceRoot, ctx.Sheet, sheetLocal);
             e.Use();
             if (picked == null)
+            {
+                links.Source = null;
                 return;
+            }
 
             if (StudioLinks.GetSlots(picked).Count > 0)
             {
@@ -1053,24 +1277,41 @@ namespace Papercut.EditorTools
                 return;
 
             var slots = StudioLinks.GetSlots(links.Source); // Fresh read — the pane cache may be mid-gesture stale.
-            links.Source = null;
             if (slots.Count == 1)
             {
-                StudioLinks.Wire(slots[0], picked);
+                ToggleWire(slots[0], picked);
                 return;
             }
             var menu = new GenericMenu();
             foreach (var slot in slots)
             {
                 var captured = slot;
-                var current = slot.Target != null ? $" (currently {slot.Target.name})" : " (empty)";
-                menu.AddItem(new GUIContent(slot.DisplayName + current), false,
-                    () => StudioLinks.Wire(captured, picked));
+                var wired = slot.Contains(picked);
+                var label = wired ? $"Unwire {slot.DisplayName}" : $"Wire {slot.DisplayName}{Currently(slot)}";
+                menu.AddItem(new GUIContent(label), wired, () => ToggleWire(captured, picked));
             }
             menu.ShowAsContext();
         }
 
-        /// <summary>Link mode right-click: a menu clearing a plate's wired slots; empty space disarms the source.</summary>
+        void ToggleWire(in StudioLinks.Slot slot, GameObject target)
+        {
+            if (slot.Contains(target))
+                StudioLinks.Unwire(slot, target);
+            else
+                StudioLinks.Wire(slot, target);
+        }
+
+        static string Currently(in StudioLinks.Slot slot)
+        {
+            if (slot.Targets.Count == 0)
+                return " (empty)";
+            var names = new string[slot.Targets.Count];
+            for (int i = 0; i < names.Length; i++)
+                names[i] = slot.Targets[i].name;
+            return $" (currently {string.Join(", ", names)})";
+        }
+
+        /// <summary>Link mode right-click: a menu clearing a plate's wired targets, one by one or all; empty space disarms the source.</summary>
         void OnLinkRightClick(Event e, in Context ctx)
         {
             var links = ctx.Links;
@@ -1084,28 +1325,44 @@ namespace Papercut.EditorTools
 
             var slots = StudioLinks.GetSlots(picked);
             var menu = new GenericMenu();
-            var any = false;
+            var wired = 0;
             foreach (var slot in slots)
             {
-                if (slot.Target == null)
-                    continue;
                 var captured = slot;
-                menu.AddItem(new GUIContent($"Clear {slot.DisplayName} (currently {slot.Target.name})"), false,
-                    () => StudioLinks.Wire(captured, null));
-                any = true;
+                foreach (var target in slot.Targets)
+                {
+                    var capturedTarget = target;
+                    menu.AddItem(new GUIContent($"Clear {slot.DisplayName} → {target.name}"), false,
+                        () => StudioLinks.Unwire(captured, capturedTarget));
+                    wired++;
+                }
             }
-            if (any)
+            if (wired > 1)
+            {
+                menu.AddSeparator(string.Empty);
+                menu.AddItem(new GUIContent("Clear all"), false, () =>
+                {
+                    foreach (var slot in StudioLinks.GetSlots(picked))
+                        StudioLinks.Clear(slot);
+                });
+            }
+            if (wired > 0)
                 menu.ShowAsContext();
         }
 
-        /// <summary>The selected element if it lives under this pane's face root; otherwise null.</summary>
+        /// <summary>The selected element if it lives under a root this pane edits (its face root; Above too in the Front pane); otherwise null.</summary>
         public GameObject SelectedElementIn(in Context ctx)
         {
             var active = Selection.activeGameObject;
             if (active == null || ctx.FaceRoot == null || ctx.Sheet == null)
                 return null;
-            var element = StudioPlacement.ElementRootOf(active.transform, ctx.FaceRoot);
-            return element != null && StudioPlacement.CanEdit(element, ctx.Sheet) ? element : null;
+            foreach (var root in EditRoots(ctx))
+            {
+                var element = StudioPlacement.ElementRootOf(active.transform, root);
+                if (element != null && StudioPlacement.CanEdit(element, ctx.Sheet))
+                    return element;
+            }
+            return null;
         }
 
         static IEnumerable<Vector2Int> HandleIds()

@@ -91,7 +91,14 @@ namespace Papercut.EditorTools
                 reason = "the sheet has no root for that face";
                 return false;
             }
-            placed = StudioPlacement.PlacePolygon(Prefab, faceRoot, Face, points, 0f); // Points are already snapped.
+            // A universal polygon goes under the Above root, from the Front pane only (Above content is edited there).
+            var root = StudioPlacement.TargetRoot(Prefab, sheet, faceRoot, aboveEditable: Face == SheetFace.Front, out var refusal);
+            if (root == null)
+            {
+                reason = refusal.TrimEnd('.');
+                return false;
+            }
+            placed = StudioPlacement.PlacePolygon(Prefab, root, Face, points, 0f); // Points are already snapped.
             if (placed == null)
             {
                 reason = "the region could not be placed (see the console)";

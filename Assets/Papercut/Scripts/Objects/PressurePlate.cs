@@ -11,28 +11,33 @@ namespace Papercut
         Hold,
         /// <summary>The first press applies its effects for good.</summary>
         Latch,
+        /// <summary>Each press switches its effects the other way; nothing happens on release.</summary>
+        Toggle,
     }
 
     /// <summary>
     /// A pressure plate on a sheet face (Design Doc: buttons; Bible §9 - built on Aaron's request, 2026-08-27).
     /// Pressed while any <see cref="IPlatePresser"/> stands on it - the player, a block, whatever comes later -
     /// judged on the flat sheet (<see cref="PressureRules"/>), so a plate under a Flap with a block on it stays
-    /// pressed. Hold and Latch are one component differing in data. What a press does is an open set of
-    /// <see cref="PlateEffect"/>s.
+    /// pressed. Hold, Latch and Toggle are one component differing in data (<see cref="PlateRules"/>). What a
+    /// press does is an open set of <see cref="PlateEffect"/>s.
     /// </summary>
     /// <remarks>
     /// The BoxCollider2D is the plate's authored footprint (a trigger; it never drives pressing) and is clipped by
     /// folding like any face content so nothing physics-driven sees a covered plate. Runs after blocks have moved.
+    /// The first tick after enabling and after the sheet reset (<see cref="Sheet.PlayerLeft"/> puts every block
+    /// back) is a seed: what is on the plate then is its condition, not a press (Aaron, 2026-09-21).
     /// </remarks>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(BoxCollider2D))]
     [DefaultExecutionOrder(10)]
     public sealed class PressurePlate : MonoBehaviour, IFoldOccludee
     {
-        [SerializeField, Tooltip("Hold: pressed while something is on it; effects revert when it is released. Latch: the first press applies the effects for good.")]
+        [SerializeField, Tooltip("Hold: pressed while something is on it; effects revert when it is released. Latch: the first press applies the effects for good. " +
+            "Toggle: each press switches the effects the other way (the state lives on what they switch); nothing happens on release.")]
         PlateMode mode = PlateMode.Hold;
 
-        [SerializeField, Tooltip("Applied when pressed, in order; a Hold plate reverts them in reverse order when released. " +
+        [SerializeField, Tooltip("Applied when pressed, in order; a Hold plate reverts them in reverse order when released; a Toggle plate toggles them on every press. " +
             "Something is 'on' the plate when its centre is inside the plate's box.")]
         PlateEffect[] effects = Array.Empty<PlateEffect>();
 
@@ -43,7 +48,7 @@ namespace Papercut
         [SerializeField, Tooltip("Colour while released.")]
         Color releasedColor = new(0.85f, 0.75f, 0.2f, 0.9f);
 
-        [SerializeField, Tooltip("Colour while pressed (a Latch plate keeps it once fired).")]
+        [SerializeField, Tooltip("Colour while pressed (a Latch plate keeps it once fired; a Toggle plate shows it only while pressed - its state is on what it switches).")]
         Color pressedColor = new(0.45f, 0.4f, 0.15f, 0.9f);
 
         BoxCollider2D box;
@@ -56,12 +61,14 @@ namespace Papercut
         readonly List<IPlatePresser> sheetPressers = new();
         readonly List<SheetPoint> points = new();
         bool ok;
+        PlateState state;
+        bool seedNext;
         static bool reportedNoPlayer;
 
-        public bool IsPressed { get; private set; }
+        public bool IsPressed => state.Pressed;
 
-        /// <summary>True once a Latch plate has fired.</summary>
-        public bool IsLatched { get; private set; }
+        /// <summary>True while the plate holds its effects applied: a Hold plate while pressed, a Latch plate once fired, a Toggle plate never.</summary>
+        public bool IsApplied => state.Applied;
 
         /// <summary>Raised when <see cref="IsPressed"/> changes.</summary>
         public event Action<bool> PressedChanged;
@@ -76,12 +83,9 @@ namespace Papercut
                 box.isTrigger = true;
             }
 
-            ok = true;
-            sheet = GetComponentInParent<Sheet>();
-            if (sheet == null) { Debug.LogError($"PressurePlate '{name}' is not under a Sheet.", this); ok = false; }
-            else if (sheet.Front != null && transform.IsChildOf(sheet.Front)) { faceRoot = sheet.Front; side = SheetFace.Front; }
-            else if (sheet.Back != null && transform.IsChildOf(sheet.Back)) { faceRoot = sheet.Back; side = SheetFace.Back; }
-            else { Debug.LogError($"PressurePlate '{name}' must be under the sheet's Front or Back root.", this); ok = false; }
+            ok = FaceContent.TryResolveFace(this, out sheet, out faceRoot, out side, out var error);
+            if (!ok)
+                Debug.LogError($"PressurePlate '{name}' {error}.", this);
 
             if (effects.Length == 0)
                 Debug.LogWarning($"PressurePlate '{name}' has no effects.", this);
@@ -96,20 +100,35 @@ namespace Papercut
                 enabled = false;
                 return;
             }
-            var faceRect = FoldFootprint.FaceLocalRect(box, faceRoot);
-            flatRect = side == SheetFace.Front ? faceRect : SheetGeometry.BackToFront(faceRect);
+            flatRect = FaceContent.FlatRect(box, faceRoot, side);
         }
 
         void OnEnable()
         {
             if (!ok)
                 return;
+            seedNext = true; // Scene start, or a plate that returns after being absent: what is on it is its condition, not a press.
+            sheet.PlayerLeft += RequestSeed;
             CollectPressers();
             ShowPressed(ShownPressed);
         }
 
-        /// <summary>What the drawing shows: a fired Latch stays down; a Hold plate follows the press.</summary>
-        bool ShownPressed => mode == PlateMode.Latch ? IsLatched : IsPressed;
+        void OnDisable()
+        {
+            if (ok)
+                sheet.PlayerLeft -= RequestSeed;
+        }
+
+        /// <summary>
+        /// The sheet reset: blocks teleport back to where they were authored in their own PlayerLeft handlers, and
+        /// the player no longer counts, so the next tick reads the authored arrangement and must not treat it as
+        /// a press (a block reset onto a Toggle plate switches nothing). Handler order does not matter: the
+        /// resets are synchronous and the seed happens on the next FixedUpdate.
+        /// </summary>
+        void RequestSeed() => seedNext = true;
+
+        /// <summary>What the drawing shows: a fired Latch stays down; a Hold or Toggle plate follows the press.</summary>
+        bool ShownPressed => mode == PlateMode.Latch ? IsApplied : IsPressed;
 
         void Start()
         {
@@ -143,25 +162,24 @@ namespace Papercut
                 points.Add(playerPoint);
 
             var pressed = PressureRules.IsPressed(flatRect, side, points);
-            if (pressed == IsPressed)
-                return;
-            IsPressed = pressed;
+            var tick = PlateRules.Step(mode, state, pressed, seedNext);
+            seedNext = false;
 
-            if (mode == PlateMode.Latch)
+            var shownBefore = ShownPressed;
+            var pressedBefore = state.Pressed;
+            state = tick.State;
+
+            switch (tick.Action)
             {
-                if (pressed && !IsLatched)
-                {
-                    IsLatched = true;
-                    ApplyEffects();
-                }
+                case PlateAction.Apply: ApplyEffects(); break;
+                case PlateAction.Revert: RevertEffects(); break;
+                case PlateAction.Toggle: ToggleEffects(); break;
             }
-            else if (pressed)
-                ApplyEffects();
-            else
-                RevertEffects();
 
-            ShowPressed(ShownPressed);
-            PressedChanged?.Invoke(pressed);
+            if (ShownPressed != shownBefore)
+                ShowPressed(ShownPressed);
+            if (state.Pressed != pressedBefore)
+                PressedChanged?.Invoke(state.Pressed);
         }
 
         void ApplyEffects()
@@ -179,6 +197,15 @@ namespace Papercut
             {
                 if (effects[i] != null)
                     effects[i].Revert();
+            }
+        }
+
+        void ToggleEffects()
+        {
+            foreach (var effect in effects)
+            {
+                if (effect != null)
+                    effect.Toggle();
             }
         }
 

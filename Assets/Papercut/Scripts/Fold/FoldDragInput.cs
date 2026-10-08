@@ -7,9 +7,11 @@ namespace Papercut
     /// How the player folds (Bible decision #3, scheme chosen by Aaron for prototyping): press near an edge or
     /// corner of the Screen — or on the crease of an existing fold — and drag inward; the grabbed fold line
     /// follows the cursor and the fold previews live; release commits; right-click or Escape cancels. A fold
-    /// that would be refused (covers the player, overlaps another fold with stacking off, overhangs) shows red
-    /// and is refused on release. Clicking near the Seam of a fold (where the tape would go) unfolds it.
-    /// Folds never extend past the sheet: the drag holds at the depth where the landed edge reaches the sheet's edge.
+    /// that would be refused (covers the player, or would carry a block under a universal wall) shows red and is refused on release. Clicking near the Seam of
+    /// a fold (where the tape would go) unfolds it. Folds never extend past the sheet, nor over a fold obstacle,
+    /// nor (with stacking off) over another fold: the drag holds at the depth where the landed edge reaches the
+    /// sheet's edge or the Flap would touch an obstacle or another Flap (<see cref="SheetFolds.MaxDepth"/>), and
+    /// follows the cursor back from there.
     /// </summary>
     /// <remarks>
     /// Lives on the Desk. Mouse and keyboard only for now. Reads the Input System "Fold" action map: Point
@@ -129,6 +131,7 @@ namespace Papercut
                     // Refusals already shown red, and a click that never became a drag, are not worth a log line.
                     if (!dragTarget.TryCommit(fold, playerLocal, out var rejection)
                         && rejection != FoldRejection.CoversPlayer && rejection != FoldRejection.OverlapsFold
+                        && rejection != FoldRejection.CoversObstacle && rejection != FoldRejection.CarriesBlockUnderWall
                         && rejection != FoldRejection.TooShallow && rejection != FoldRejection.NothingToFold)
                         Debug.Log($"Fold not made: {rejection}.", this);
                     dragging = false;
@@ -147,7 +150,8 @@ namespace Papercut
             var folds = screen.Folds;
             if (folds.TryUnfoldAt(local, playerLocal, unfoldGrabDistance, out var unfoldRejection))
                 return;
-            if (unfoldRejection == FoldRejection.PlayerOnFlap || unfoldRejection == FoldRejection.ObjectOnEdge)
+            if (unfoldRejection == FoldRejection.PlayerOnFlap || unfoldRejection == FoldRejection.ObjectOnEdge
+                || unfoldRejection == FoldRejection.PaperweightOnFlap)
             {
                 Debug.Log($"Not unfolded: {unfoldRejection}.", this); // No visual cue yet.
                 return;
@@ -191,7 +195,7 @@ namespace Papercut
             dragTarget = null;
         }
 
-        /// <summary>The fold under the cursor: depth from the drag point and the grabbed line, snapped, then held so it never overhangs.</summary>
+        /// <summary>The fold under the cursor: depth from the drag point and the grabbed line, snapped, then held so it never overhangs or reaches a fold obstacle.</summary>
         Fold DragFold(Vector2 local)
         {
             var depth = Snap(FoldGeometry.DepthForDragPoint(dragAnchor, local, dragGrabDepth));

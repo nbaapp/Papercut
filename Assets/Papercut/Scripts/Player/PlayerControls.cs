@@ -4,8 +4,8 @@ using UnityEngine.InputSystem;
 namespace Papercut
 {
     /// <summary>
-    /// Reads the Input System "Player" action map and feeds it to <see cref="PlayerMover"/>.
-    /// Keyboard, arrows and gamepad bindings live in the actions asset, not here.
+    /// Reads the Input System "Player" action map and feeds it to <see cref="PlayerMover"/>: the move vector and
+    /// whether the interact key is down. Keyboard, arrows and gamepad bindings live in the actions asset, not here.
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(PlayerMover))]
@@ -13,6 +13,7 @@ namespace Papercut
     {
         const string MapName = "Player";
         const string MoveActionName = "Move";
+        const string InteractActionName = "Interact";
 
         [SerializeField]
         InputActionAsset actions;
@@ -20,6 +21,7 @@ namespace Papercut
         PlayerMover mover;
         InputActionMap playerMap;
         InputAction move;
+        InputAction interact;
 
         void Awake()
         {
@@ -34,6 +36,7 @@ namespace Papercut
 
             playerMap = actions.FindActionMap(MapName, throwIfNotFound: true);
             move = playerMap.FindAction(MoveActionName, throwIfNotFound: true);
+            interact = playerMap.FindAction(InteractActionName, throwIfNotFound: true);
         }
 
         void OnEnable()
@@ -45,11 +48,14 @@ namespace Papercut
         {
             playerMap?.Disable();
             mover.SetMoveInput(Vector2.zero);
+            mover.SetInteractInput(false);
         }
 
         void Update()
         {
             mover.SetMoveInput(move.ReadValue<Vector2>());
+            // The action has no initial state check: a key already down when the map enables is seen once it is pressed again.
+            mover.SetInteractInput(interact.IsPressed());
         }
     }
 }

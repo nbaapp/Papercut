@@ -44,8 +44,8 @@ namespace Papercut
     {
         /// <summary>
         /// The texture UV (0..1 over the whole texture) of <paramref name="point"/> when the frame's pivot is at
-        /// <paramref name="anchor"/>. Points outside the frame give UVs outside 0..1; a clamp-wrapped texture with
-        /// transparent borders shows nothing there.
+        /// <paramref name="anchor"/>. Points outside the frame give UVs outside its rect; a mesh must not draw them
+        /// (<see cref="PushableBlock.DrawingRect"/>), as a clamped texture repeats its edge pixels there.
         /// </summary>
         public static Vector2 Uv(in SpriteFrame frame, Vector2 anchor, Vector2 point)
         {

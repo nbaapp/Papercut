@@ -90,6 +90,23 @@ namespace Papercut
         /// <summary>The face of this layer that is up.</summary>
         public static SheetFace UpSide(in SheetLayers.Layer layer) => layer.FrontUp ? SheetFace.Front : SheetFace.Back;
 
+        /// <summary>
+        /// The place on the flat sheet under a sheet-local Desk point: the point mapped back through the topmost
+        /// layer lying there, on that layer's up face. False if no part of the sheet is there. The one notion of
+        /// "where is the player on the sheet" - a pressure plate (<see cref="PlayerPresser"/>) and an
+        /// <see cref="Unlockable"/> judge the player by this same place, so they never disagree.
+        /// </summary>
+        public static bool TryGetSheetPoint(SheetLayers layers, Vector2 sheetLocal, out SheetPoint point)
+        {
+            point = default;
+            var top = TopLayerAt(layers, sheetLocal);
+            if (top < 0)
+                return false;
+            var layer = layers.Layers[top];
+            point = new SheetPoint(layer.ToDesk.Inverse.Apply(sheetLocal), UpSide(layer));
+            return true;
+        }
+
         public static bool CentreOn(Vector2 deskPoint, in SheetLayers.Layer layer) => layer.Desk.Contains(deskPoint);
 
         /// <summary>

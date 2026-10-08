@@ -39,7 +39,9 @@ namespace Papercut
             if (body == null || !body.TryGetComponent(out PlayerMover player))
                 return;
 
-            if (Vector2.Dot(player.MoveInput, direction.ToVector()) < MoveTowardThreshold)
+            // What the player is actually moving by: while holding a block, the input along the block's axis only,
+            // so a sideways press beside an edge does not travel mid-hold (Aaron, 2026-09-24: sideways does nothing).
+            if (Vector2.Dot(player.EffectiveMoveInput, direction.ToVector()) < MoveTowardThreshold)
                 return;
 
             navigator.TravelThrough(this, player);

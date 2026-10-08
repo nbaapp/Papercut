@@ -314,6 +314,34 @@ namespace Papercut.Tests
         }
 
         [Test]
+        public void TryGetSheetPoint_Flat_IsTheSamePointOnFront()
+        {
+            Assert.IsTrue(SheetPlacement.TryGetSheetPoint(SheetLayers.Flat, new Vector2(1f, -2f), out var point));
+            Assert.AreEqual(SheetFace.Front, point.Side);
+            Assert.AreEqual(1f, point.Point.x, Eps);
+            Assert.AreEqual(-2f, point.Point.y, Eps);
+        }
+
+        [Test]
+        public void TryGetSheetPoint_OnALandedFlap_IsTheMirroredFlatPointOnBack()
+        {
+            // South fold of depth 3: the Flap over y ∈ [−1.25, 1.75] is the sheet's y ∈ [−4.25, −1.25] turned about y = −1.25.
+            var stack = SouthFold();
+            Assert.IsTrue(SheetPlacement.TryGetSheetPoint(stack, new Vector2(2f, 0f), out var point));
+            Assert.AreEqual(SheetFace.Back, point.Side, "the Flap presents the Back");
+            Assert.AreEqual(2f, point.Point.x, Eps, "an edge fold keeps x");
+            Assert.AreEqual(-2.5f, point.Point.y, Eps, "y = 0 came from y = −2.5 (mirror about the crease at −1.25)");
+        }
+
+        [Test]
+        public void TryGetSheetPoint_OffEveryLayer_IsFalse()
+        {
+            var stack = SouthFold();
+            Assert.IsFalse(SheetPlacement.TryGetSheetPoint(stack, new Vector2(0f, -3f), out _), "the lifted region is bare desk");
+            Assert.IsFalse(SheetPlacement.TryGetSheetPoint(SheetLayers.Flat, new Vector2(0f, 5f), out _), "off the sheet");
+        }
+
+        [Test]
         public void IsUp_UpSide()
         {
             var stack = SouthFold();

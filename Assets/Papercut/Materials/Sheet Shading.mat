@@ -1,0 +1,55 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: Sheet Shading
+  m_Shader: {fileID: 4800000, guid: 7f39b94cafa57e349a444573d4555de6, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _CreaseInsideMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _CreaseOutsideMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _GrainMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _CreaseCount: 0
+    - _CreaseFadeStart: 0.5
+    - _CreaseHalfWidth: 0.5
+    - _CreaseMapWidth: 11
+    - _CreaseStrength: 1
+    - _GrainAmbient: 0.6
+    - _GrainStrength: 0
+    - _RememberedCreaseStrength: 0.4
+    m_Colors:
+    - _CreaseFlip: {r: 1, g: 1, b: 0, a: 0}
+    - _CreaseLineV: {r: 0.5, g: 0.5, b: 0, a: 0}
+    - _GrainFrame: {r: 1, g: 0, b: 0, a: 1}
+    - _LightDir: {r: -0.5, g: 0.6, b: 1, a: 0}
+    - _SheetSize: {r: 11, g: 8.5, b: 0, a: 0}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

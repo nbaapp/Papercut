@@ -20,12 +20,18 @@ namespace Papercut
         Overhangs,
         /// <summary>No part of the sheet lies on the Flap side of the crease.</summary>
         NothingToFold,
-        /// <summary>The fold would lift or land on another fold's Flap, and stacking is off.</summary>
+        /// <summary>The fold would lift or land on another fold's Flap, and stacking is off. A drag holds short of one (<see cref="SheetFolds.MaxDepth"/>); this is the safety net.</summary>
         OverlapsFold,
         /// <summary>A later fold lies on or through this one; unfold that first.</summary>
         CoveredByLaterFold,
         /// <summary>An object riding the Flap hangs past its edge; unfolding would carry it off the sheet (an <see cref="IFoldConstraint"/>).</summary>
         ObjectOnEdge,
+        /// <summary>The Flap would lift or land on an <see cref="IFoldObstacle"/>. A drag holds short of one (<see cref="SheetFolds.MaxDepth"/>); this is the safety net.</summary>
+        CoversObstacle,
+        /// <summary>A <see cref="Paperweight"/> rests on the landed Flap; a weight is always on top of the sheet, so push it off first (an <see cref="IFoldConstraint"/>).</summary>
+        PaperweightOnFlap,
+        /// <summary>The Flap would carry a block under a universal wall that stops blocks (an <see cref="IFoldConstraint"/>): the block would end inside the wall, so the fold is refused like one that covers the player (Aaron, 2026-09-28).</summary>
+        CarriesBlockUnderWall,
     }
 
     /// <summary>
@@ -40,7 +46,10 @@ namespace Papercut
     /// <see cref="IFoldRenderer"/>; physics through <see cref="SheetOcclusion"/> and <see cref="SheetBoundary"/>,
     /// which listen to <see cref="Changed"/> and read <see cref="Layers"/>. Unfolding is by the Seam only —
     /// where the tape would go (Aaron, 2026-08-26); a press on a crease grabs that fold line to fold it further
-    /// (<see cref="TryGrabCreaseAt"/>).
+    /// (<see cref="TryGrabCreaseAt"/>). Fold obstacles under the sheet (<see cref="IFoldObstacle"/>; Aaron,
+    /// 2026-09-14) hold a drag short of them through <see cref="MaxDepth"/> and, as a safety net, refuse a fold
+    /// that would reach them; with stacking off the other folds' Flaps hold a drag the same way (Aaron,
+    /// 2026-09-16); unfold constraints (<see cref="IFoldConstraint"/>) are asked before an unfold.
     /// </remarks>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(Sheet))]
@@ -51,8 +60,8 @@ namespace Papercut
         bool allowMultipleFolds = true;
 
         [SerializeField, Tooltip("Allow a fold to lift or land on another fold's Flap (the Flap side of the crease is folded over, however many " +
-            "layers deep). Off: every fold must be independent of the others - its lifted and landed regions may not touch theirs. " +
-            "Ignored when multiple folds are off.")]
+            "layers deep). Off: every fold must be independent of the others - its lifted and landed regions may not touch theirs, " +
+            "and a drag stops where the Flap would first touch another fold, like at a paperweight. Ignored when multiple folds are off.")]
         bool allowStacking = true;
 
         [Header("Commit")]
@@ -67,7 +76,7 @@ namespace Papercut
         AnimationCurve unfoldEase = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
 
         [Header("Creases")]
-        [SerializeField, Tooltip("Draw a faint crease where a fold used to be, until the player leaves the sheet.")]
+        [SerializeField, Tooltip("Draw a faint crease where a fold used to be - one undone by the player or by the sheet unfolding when the player leaves. Creases stay for the play session.")]
         bool rememberCreases = true;
 
         readonly List<Fold> folds = new();
@@ -75,6 +84,9 @@ namespace Papercut
         readonly List<CreaseMark> remembered = new();
         readonly List<FoldVisual> visuals = new();
         readonly List<IFoldConstraint> constraints = new();
+        readonly List<IFoldObstacle> obstacles = new();
+        readonly List<ConvexPolygon> obstaclePieces = new();
+        readonly List<ConvexPolygon> foldPieces = new(); // Every committed fold's lifted and landed pieces: what a new fold must stay clear of with stacking off.
 
         Sheet sheet;
         IFoldRenderer foldRenderer;
@@ -92,6 +104,9 @@ namespace Papercut
 
         /// <summary>The sheet as it lies after every committed fold.</summary>
         public SheetLayers Layers => layers;
+
+        /// <summary>Creases left by folds that have been undone, oldest first. Kept for the play session.</summary>
+        public IReadOnlyList<CreaseMark> RememberedCreases => remembered;
 
         /// <summary>True if a new fold may be started now (always, unless multiple folds are off and one exists).</summary>
         public bool CanStartFold => allowMultipleFolds || folds.Count == 0;
@@ -137,8 +152,27 @@ namespace Papercut
             Draw();
         }
 
-        /// <summary>The largest depth a fold from <paramref name="anchor"/> can have now (no overhang).</summary>
-        public float MaxDepth(FoldAnchor anchor) => layers.MaxDepth(anchor);
+        /// <summary>
+        /// The largest depth a fold from <paramref name="anchor"/> can have now: no overhang, the Flap short of
+        /// every fold obstacle (Aaron, 2026-09-14: the drag "just can't stretch beyond that point") and, with
+        /// stacking off, short of every other fold's Flap and of the sheet it lifted away (Aaron, 2026-09-16: the
+        /// Flap "stops in place when it bumps into another flap", so two Flaps can be laid directly side by side
+        /// and walked across). Zero when that bound is below the minimum commit depth, so the edge is inert
+        /// rather than lifting a sliver that would drop on release.
+        /// </summary>
+        public float MaxDepth(FoldAnchor anchor)
+        {
+            GatherObstacles();
+            return MaxDepthGathered(anchor);
+        }
+
+        float MaxDepthGathered(FoldAnchor anchor)
+        {
+            var depth = Mathf.Min(layers.MaxDepth(anchor), FoldObstacles.MaxDepth(anchor, layers, obstaclePieces));
+            if (!allowStacking)
+                depth = Mathf.Min(depth, FoldObstacles.MaxDepth(anchor, layers, foldPieces));
+            return depth < minDepth ? 0f : depth;
+        }
 
         /// <summary>
         /// Why <paramref name="fold"/> cannot be made on the sheet as it lies, or <see cref="FoldRejection.None"/>.
@@ -146,7 +180,14 @@ namespace Papercut
         /// </summary>
         public FoldRejection Evaluate(Fold fold, Rect playerLocal, out FoldEffect effect)
         {
-            layers.Apply(fold, folds.Count, out effect);
+            GatherObstacles();
+            return EvaluateGathered(fold, playerLocal, out effect);
+        }
+
+        /// <summary><see cref="Evaluate"/> against the obstacles as last gathered (one gather per drag frame).</summary>
+        FoldRejection EvaluateGathered(Fold fold, Rect playerLocal, out FoldEffect effect)
+        {
+            var after = layers.Apply(fold, folds.Count, out effect);
             if (!CanStartFold)
                 return FoldRejection.AlreadyFolded;
             if (effect.Outcome == FoldOutcome.NothingToFold)
@@ -155,6 +196,14 @@ namespace Papercut
                 return FoldRejection.Overhangs;
             if (!FoldValidity.IsValid(effect, playerLocal))
                 return FoldRejection.CoversPlayer;
+            if (!FoldObstacles.Clear(effect, obstaclePieces))
+                return FoldRejection.CoversObstacle;
+            foreach (var constraint in constraints)
+            {
+                var refusal = constraint.RefuseFold(effect, after, folds.Count);
+                if (refusal != FoldRejection.None)
+                    return refusal;
+            }
             if (!allowStacking)
             {
                 foreach (var committed in effects)
@@ -172,11 +221,12 @@ namespace Papercut
         /// </summary>
         public void SetPreview(Fold? fold, Rect playerLocal)
         {
-            preview = fold.HasValue ? fold.Value.WithDepth(Mathf.Min(fold.Value.Depth, MaxDepth(fold.Value.Anchor))) : null;
+            GatherObstacles();
+            preview = fold.HasValue ? fold.Value.WithDepth(Mathf.Min(fold.Value.Depth, MaxDepthGathered(fold.Value.Anchor))) : null;
             previewValid = true;
             if (preview.HasValue)
             {
-                var rejection = Evaluate(preview.Value, playerLocal, out _);
+                var rejection = EvaluateGathered(preview.Value, playerLocal, out _);
                 previewValid = rejection == FoldRejection.None || rejection == FoldRejection.NothingToFold;
             }
             Draw();
@@ -205,7 +255,7 @@ namespace Papercut
         /// Seams are where they were at commit time and may since have been folded over, so the caller should
         /// treat that as advice, not a hit, and go on to try a crease or edge grab; false with
         /// <see cref="FoldRejection.None"/> if no Seam is near; false with what an <see cref="IFoldConstraint"/> under the sheet
-        /// answers (e.g. <see cref="FoldRejection.ObjectOnEdge"/>) if one refuses.
+        /// answers (e.g. <see cref="FoldRejection.ObjectOnEdge"/>, <see cref="FoldRejection.PaperweightOnFlap"/>) if one refuses.
         /// </summary>
         public bool TryUnfoldAt(Vector2 sheetLocal, Rect playerLocal, float grabDistance, out FoldRejection rejection)
         {
@@ -235,13 +285,20 @@ namespace Papercut
             return index >= 0;
         }
 
-        /// <summary>Removes every fold (no animation) and forgets creases and preview. Called when the player leaves.</summary>
+        /// <summary>
+        /// Removes every fold (no animation) and the preview. Called when the player leaves. Creases persist (Aaron,
+        /// 2026-10-07): the folds undone here leave their creases like any unfold, and earlier ones stay.
+        /// </summary>
         public void Reset()
         {
             StopRetreat();
             var hadFolds = folds.Count > 0;
+            if (rememberCreases)
+            {
+                foreach (var effect in effects)
+                    remembered.AddRange(effect.CreaseMarks);
+            }
             folds.Clear();
-            remembered.Clear();
             preview = null;
             Replay();
             if (hadFolds)
@@ -249,14 +306,33 @@ namespace Papercut
             Draw();
         }
 
+        /// <summary>
+        /// Where every active fold obstacle under the sheet is right now (sheet-local pieces). Asked fresh each time
+        /// rather than cached: a block moves between drags, and the cost is a few polygons per drag frame on one sheet.
+        /// </summary>
+        void GatherObstacles()
+        {
+            obstacles.Clear();
+            obstaclePieces.Clear();
+            GetComponentsInChildren(false, obstacles);
+            foreach (var obstacle in obstacles)
+                obstacle.AddObstaclePieces(obstaclePieces);
+            // The fold constraints are asked per evaluation too (a block may be carried under a universal wall).
+            constraints.Clear();
+            GetComponentsInChildren(false, constraints);
+        }
+
         void Replay()
         {
             layers = SheetLayers.Flat;
             effects.Clear();
+            foldPieces.Clear();
             for (int i = 0; i < folds.Count; i++)
             {
                 layers = layers.Apply(folds[i], i, out var effect);
                 effects.Add(effect);
+                foldPieces.AddRange(effect.Lifted);
+                foldPieces.AddRange(effect.Landed);
             }
         }
 

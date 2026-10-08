@@ -34,6 +34,7 @@ Check the task against the **Open decisions register (Bible §11)** before start
 - **Scope is provisional. Quality is not.** There is no throwaway phase; the prototype becomes the game. No disposable implementations, no known-broken paths, no deferring correctness because "it's just the prototype."
 - **Robust ≠ pre-generalized.** Correct, readable, tested where it matters, no silent failure, no hidden coupling. Do not build abstraction layers, plugin systems, or config surfaces for features that don't exist yet. Prefer the simple correct implementation; flexibility comes from clean seams, not extra layers.
 - If quality and deadline conflict, **propose reducing scope** rather than lowering the standard.
+- **The open editor is shared.** Aaron often runs several Claude instances against one Unity editor, and he plays every change himself. So: **never enter Play Mode** (`editor_play`, Play Mode tests) unless Aaron opted in for this specific task — if you think a task truly needs it, ask once up front with the reason. Before an editor test run, check nothing else is using the editor (not playing, no test run in progress, not compiling, scene not dirty) and ask rather than push through. Verify with recompile, Edit Mode tests, and edit-mode `eval`; report honestly what was and wasn't checked, and list what Aaron needs to play. This applies to lightweight tasks as much as full-workflow ones; details in `coding-workflow` → *Verification*.
 
 ## 4. Structure rules
 

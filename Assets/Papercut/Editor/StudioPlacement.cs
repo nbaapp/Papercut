@@ -29,21 +29,61 @@ namespace Papercut.EditorTools
             => new(Snap(value.x, increment), Snap(value.y, increment));
 
         /// <summary>
-        /// Instantiates <paramref name="prefab"/> under <paramref name="faceRoot"/> at the given sheet-local
-        /// x/y. The prefab root's authored z is preserved (the element z convention: Wall/Water/Gate/plates/props
-        /// roots at −0.05; the Block root stays at 0 because its runtime mesh takes its depth from the fold renderer,
-        /// and its Drawing child carries the −0.05 — at z 0 a sprite sits on the opaque Surface quad, behind the face
-        /// art at −0.01). The face's layer is applied recursively (Block has Visual and Drawing children).
+        /// A universal region (above the sheet, Aaron 2026-09-28): a prefab asset or placed element whose root
+        /// <see cref="TerrainRegion"/> has its Universal flag on. Serialized read, so it holds in edit mode.
         /// </summary>
-        public static GameObject Place(GameObject prefab, Transform faceRoot, SheetFace face, Vector2 sheetLocal, float snapIncrement)
+        public static bool IsUniversal(GameObject element)
         {
-            if (prefab == null || faceRoot == null)
+            if (element == null || !element.TryGetComponent(out TerrainRegion region))
+                return false;
+            return new SerializedObject(region).FindProperty("universal").boolValue;
+        }
+
+        /// <summary>
+        /// The root a prefab is placed under: the sheet's Above root for a universal prefab, else
+        /// <paramref name="faceRoot"/>. Null, with a reason, when a universal prefab has nowhere to go (the sheet
+        /// has no Above root) or is being placed from a pane that does not edit Above content.
+        /// </summary>
+        public static Transform TargetRoot(GameObject prefab, Sheet sheet, Transform faceRoot, bool aboveEditable, out string reason)
+        {
+            reason = null;
+            if (!IsUniversal(prefab))
+                return faceRoot;
+            if (!aboveEditable)
             {
-                Debug.LogError("StudioPlacement.Place: prefab and face root must both be assigned.");
+                reason = "Universal regions sit above the sheet: place them in the Front pane.";
+                return null;
+            }
+            if (sheet == null || sheet.Above == null)
+            {
+                reason = "This sheet has no Above root; re-create it from the Sheet prefab to place universal regions.";
+                return null;
+            }
+            return sheet.Above;
+        }
+
+        /// <summary>The layer content under <paramref name="root"/> lives on: the face's layer, or Default under the Above root.</summary>
+        public static int LayerFor(Transform root, Sheet sheet, SheetFace face)
+            => sheet != null && root == sheet.Above ? Sheet.AboveLayer : FoldLayers.LayerOf(face);
+
+        /// <summary>
+        /// Instantiates <paramref name="prefab"/> under <paramref name="root"/> (a face root, or the sheet's Above root
+        /// for a universal region) at the given sheet-local x/y. The prefab root's authored z is preserved (the element z
+        /// convention: Wall/Water/Gate/plates/props roots at −0.05; the Block root stays at 0 because its runtime mesh
+        /// takes its depth from the fold renderer, and its Drawing child carries −0.08, in front of the other elements,
+        /// so a block or paperweight over a wall draws above it in the Studio as the game composites it — at z 0 a sprite
+        /// sits on the opaque Surface quad, behind the face art at −0.01). The root's layer is applied recursively (Block
+        /// has Visual and Drawing children): the face's layer, or Default under Above (<see cref="LayerFor"/>).
+        /// </summary>
+        public static GameObject Place(GameObject prefab, Transform root, SheetFace face, Vector2 sheetLocal, float snapIncrement)
+        {
+            if (prefab == null || root == null)
+            {
+                Debug.LogError("StudioPlacement.Place: prefab and root must both be assigned.");
                 return null;
             }
 
-            var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab, faceRoot);
+            var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab, root);
             if (instance == null)
             {
                 Debug.LogError($"StudioPlacement.Place: could not instantiate '{prefab.name}'.");
@@ -53,7 +93,7 @@ namespace Papercut.EditorTools
             var snapped = Snap(sheetLocal, snapIncrement);
             var t = instance.transform;
             t.localPosition = new Vector3(snapped.x, snapped.y, t.localPosition.z);
-            SetLayerRecursively(instance.transform, FoldLayers.LayerOf(face));
+            SetLayerRecursively(instance.transform, LayerFor(root, root.GetComponentInParent<Sheet>(true), face));
             Undo.RegisterCreatedObjectUndo(instance, $"Place {prefab.name}");
             StudioEdits.Edited(instance);
             return instance;
@@ -87,6 +127,17 @@ namespace Papercut.EditorTools
                 return false;
 
             var t = element.transform;
+            if (sheet.Above != null && t.parent == sheet.Above)
+            {
+                // Above content is in sheet space and is never mapped through a fold: the Base is the sheet itself.
+                if (face != SheetFace.Front)
+                {
+                    reason = $"'{element.name}' sits above the sheet and cannot be moved to the Back.";
+                    return false;
+                }
+                Move(element, authoredLocal, snapIncrement);
+                return true;
+            }
             if (t.parent == targetRoot)
             {
                 Move(element, authoredLocal, snapIncrement);
@@ -495,6 +546,19 @@ namespace Papercut.EditorTools
         public static void MagnetTargets(Transform faceRoot, GameObject exclude, List<Vector2> targets)
         {
             targets.Clear();
+            AddMagnetTargets(faceRoot, exclude, targets);
+        }
+
+        /// <summary><see cref="MagnetTargets(Transform, GameObject, List{Vector2})"/> over several roots sharing one space (a face root and the Above root: universal and face regions magnet to each other).</summary>
+        public static void MagnetTargets(IReadOnlyList<Transform> roots, GameObject exclude, List<Vector2> targets)
+        {
+            targets.Clear();
+            foreach (var root in roots)
+                AddMagnetTargets(root, exclude, targets);
+        }
+
+        static void AddMagnetTargets(Transform faceRoot, GameObject exclude, List<Vector2> targets)
+        {
             if (faceRoot == null)
                 return;
             var outline = new List<Vector2>();
@@ -574,20 +638,48 @@ namespace Papercut.EditorTools
             return copy;
         }
 
+        /// <summary>
+        /// Destroys an element, first unwiring it from every plate on its sheet so no effect keeps a dangling
+        /// target the Studio could not show or clear (code review S1). One undo group with the destroy.
+        /// </summary>
         public static void Delete(GameObject element)
         {
             if (element == null)
                 return;
             var scene = element.scene;
+            UnwireEverywhere(element);
             Undo.DestroyObjectImmediate(element);
             StudioEdits.Edited(scene);
+        }
+
+        static void UnwireEverywhere(GameObject target)
+        {
+            var sheet = target.GetComponentInParent<Sheet>();
+            if (sheet == null)
+                return;
+            foreach (var root in new[] { sheet.Front, sheet.Back })
+            {
+                if (root == null)
+                    continue;
+                for (int i = 0; i < root.childCount; i++)
+                {
+                    var element = root.GetChild(i).gameObject;
+                    if (element == target)
+                        continue;
+                    foreach (var slot in StudioLinks.GetSlots(element))
+                    {
+                        if (slot.Contains(target))
+                            StudioLinks.Unwire(slot, target);
+                    }
+                }
+            }
         }
 
         // ----- Guard rails -----
 
         /// <summary>
-        /// True if the Studio may move/resize/delete this object: a descendant of the sheet's Front or Back
-        /// root, but never a face root itself, the Surface quad, or the face's background-art object (the
+        /// True if the Studio may move/resize/delete this object: a descendant of the sheet's Front, Back or
+        /// Above root, but never a root itself, the Surface quad, or the face's background-art object (the
         /// art slot owns that).
         /// </summary>
         public static bool CanEdit(GameObject candidate, Sheet sheet)
@@ -596,12 +688,15 @@ namespace Papercut.EditorTools
                 return false;
 
             var t = candidate.transform;
-            if (t == sheet.Front || t == sheet.Back)
+            if (t == sheet.Front || t == sheet.Back || t == sheet.Above)
                 return false;
-            if (!t.IsChildOf(sheet.Front) && !t.IsChildOf(sheet.Back))
+            var underAbove = sheet.Above != null && t.IsChildOf(sheet.Above);
+            if (!t.IsChildOf(sheet.Front) && !t.IsChildOf(sheet.Back) && !underAbove)
                 return false;
             if (candidate.GetComponent<MeshFilter>() != null && candidate.name == "Surface")
                 return false;
+            if (underAbove)
+                return true;
 
             var faceRoot = t.IsChildOf(sheet.Front) ? sheet.Front : sheet.Back;
             if (StudioSheetOps.FindFaceArt(faceRoot, out _) == candidate)
@@ -702,11 +797,41 @@ namespace Papercut.EditorTools
         /// </summary>
         public static GameObject PickElement(Transform faceRoot, Sheet sheet, Vector2 faceLocalPoint)
         {
-            if (faceRoot == null)
-                return null;
-
             GameObject best = null;
             var bestArea = float.MaxValue;
+            PickElement(faceRoot, sheet, faceLocalPoint, ref best, ref bestArea);
+            return best;
+        }
+
+        /// <summary>
+        /// <see cref="PickElement(Transform, Sheet, Vector2)"/> across several roots sharing one space (the Front
+        /// pane's face root and the Above root): the smallest hit outline over all of them wins; on an equal area
+        /// the later root wins (roots are searched last to first and the first hit keeps a tie), so listing Above
+        /// last picks a universal region lying exactly over a face region of the same shape - it is on top.
+        /// </summary>
+        public static GameObject PickElement(IReadOnlyList<Transform> roots, Sheet sheet, Vector2 sheetLocalPoint)
+        {
+            GameObject best = null;
+            var bestArea = float.MaxValue;
+            for (int i = roots.Count - 1; i >= 0; i--)
+                PickElement(roots[i], sheet, sheetLocalPoint, ref best, ref bestArea);
+            return best;
+        }
+
+        /// <summary>The editable element at a point under one root, with the area of the outline it was hit through (for choosing between roots that do not share a space).</summary>
+        public static bool TryPickElement(Transform root, Sheet sheet, Vector2 localPoint, out GameObject element, out float area)
+        {
+            element = null;
+            area = float.MaxValue;
+            PickElement(root, sheet, localPoint, ref element, ref area);
+            return element != null;
+        }
+
+        static void PickElement(Transform faceRoot, Sheet sheet, Vector2 faceLocalPoint, ref GameObject best, ref float bestArea)
+        {
+            if (faceRoot == null)
+                return;
+
             var outline = new List<Vector2>();
             foreach (var collider in faceRoot.GetComponentsInChildren<Collider2D>(true))
             {
@@ -729,7 +854,6 @@ namespace Papercut.EditorTools
                 if (TryGetPropOutline(prop, faceRoot, outline) && PointInPolygon(faceLocalPoint, outline))
                     Consider(prop, outline, ref best, ref bestArea);
             }
-            return best;
         }
 
         static void Consider(GameObject element, List<Vector2> outline, ref GameObject best, ref float bestArea)

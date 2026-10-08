@@ -73,7 +73,7 @@ namespace Papercut.Tests
         }
 
         [Test]
-        public void EdgeFold_CreaseMarks_ShiftTowardStayOnFront_TowardFlapOnBack()
+        public void EdgeFold_CreaseMarks_LiftedSideSouth_FrontInside()
         {
             Replay(out var effect, new Fold(FoldAnchor.EdgeSouth, 3f));
 
@@ -81,9 +81,30 @@ namespace Papercut.Tests
             var back = effect.CreaseMarks.Single(m => m.Face == SheetFace.Back);
             Assert.AreEqual(-1.25f, front.A.y, Eps);
             Assert.AreEqual(-1.25f, back.A.y, Eps);
-            Assert.AreEqual(1f, front.Shift.y, Eps, "Front is up: toward the staying (north) side");
-            Assert.AreEqual(-1f, back.Shift.y, Eps, "Back is down: toward the lifted (south) side");
+            Assert.AreEqual(0f, front.LiftedSide.x, Eps);
+            Assert.AreEqual(-1f, front.LiftedSide.y, Eps, "the south strip lifted");
+            Assert.AreEqual(0f, back.LiftedSide.x, Eps);
+            Assert.AreEqual(-1f, back.LiftedSide.y, Eps, "an x mirror leaves south as south in Back-space");
+            Assert.IsTrue(front.Inside, "Front was up: the inside of the fold");
+            Assert.IsFalse(back.Inside);
             Assert.AreEqual(-front.A.x, back.A.x, Eps, "Back-space is x-mirrored");
+        }
+
+        [Test]
+        public void CornerFold_CreaseMarks_LiftedSideTowardTheCorner_MirroredOnBack()
+        {
+            Replay(out var effect, new Fold(FoldAnchor.CornerNorthEast, 2f));
+
+            var front = effect.CreaseMarks.Single(m => m.Face == SheetFace.Front);
+            var back = effect.CreaseMarks.Single(m => m.Face == SheetFace.Back);
+            var diagonal = Mathf.Sqrt(0.5f);
+            Assert.AreEqual(diagonal, front.LiftedSide.x, Eps, "toward the north-east corner");
+            Assert.AreEqual(diagonal, front.LiftedSide.y, Eps);
+            Assert.AreEqual(-diagonal, back.LiftedSide.x, Eps, "Back-space is x-mirrored");
+            Assert.AreEqual(diagonal, back.LiftedSide.y, Eps);
+            Assert.AreEqual(0f, Vector2.Dot(front.LiftedSide, front.B - front.A), Eps, "perpendicular to the crease");
+            Assert.IsTrue(front.Inside);
+            Assert.IsFalse(back.Inside);
         }
 
         [Test]
@@ -204,7 +225,7 @@ namespace Papercut.Tests
         }
 
         [Test]
-        public void FoldOnFold_CreaseMarks_OnTheBackUpLayer_ShiftInBackSpace()
+        public void FoldOnFold_CreaseMarks_OnTheBackUpLayer_BackIsInside()
         {
             Replay(out var effect, new Fold(FoldAnchor.EdgeNorth, 2f), new Fold(FoldAnchor.EdgeWest, 3f));
 
@@ -216,10 +237,12 @@ namespace Papercut.Tests
             var back = onFlap.Single(m => m.Face == SheetFace.Back);
             Assert.AreEqual(-2.5f, front.A.x, Eps);
             Assert.AreEqual(2.5f, back.A.x, Eps, "Back-space is x-mirrored");
-            // Staying side is +x on the desk; the Back face is up on this piece, so the Back mark shifts toward it.
-            // Desk +x is Front-space +x here (the north fold mirrors y only), and Back-space -x.
-            Assert.AreEqual(-1f, back.Shift.x, Eps, "Back (up): toward the staying side, in Back-space");
-            Assert.AreEqual(-1f, front.Shift.x, Eps, "Front (down): toward the lifted side, in Front-space");
+            // The west side lifted: desk -x, which is Front-space -x here (the north fold mirrors y only) and
+            // Back-space +x. The Back face is up on this piece, so it is the inside of the fold.
+            Assert.AreEqual(-1f, front.LiftedSide.x, Eps, "toward the lifted (west) side, in Front-space");
+            Assert.AreEqual(1f, back.LiftedSide.x, Eps, "toward the lifted (west) side, in Back-space");
+            Assert.IsFalse(front.Inside, "Front was down on the Flap");
+            Assert.IsTrue(back.Inside, "Back was up on the Flap: the inside of this fold");
         }
 
         [Test]
@@ -407,6 +430,86 @@ namespace Papercut.Tests
             Assert.IsFalse(result.IsWhole, "but not where it was authored");
             Assert.AreEqual(1, result.VisibleParts.Count);
             AssertRect(Rect.MinMaxRect(0f, 2.5f, 1f, 2.9f), result.VisibleParts[0].Bounds);
+        }
+
+        // ----- Above the sheet (universal regions, 2026-09-28): clipped to the union of the layers -----
+
+        static float TotalArea(CoverageResult result)
+        {
+            var total = 0f;
+            foreach (var p in result.VisibleParts)
+                total += p.Area;
+            return total;
+        }
+
+        [Test]
+        public void CoverageAbove_Flat_InsideTheSheet_IsWhole()
+        {
+            var result = SheetLayers.Flat.CoverageAbove(FaceFootprint.FromRect(Rect.MinMaxRect(0f, 0f, 1f, 1f)));
+            Assert.IsTrue(result.IsWhole);
+            Assert.AreEqual(FoldCoverage.Uncovered, result.Coverage);
+        }
+
+        [Test]
+        public void CoverageAbove_Flat_PastTheEdge_IsTrimmedToTheSheet()
+        {
+            var result = SheetLayers.Flat.CoverageAbove(FaceFootprint.FromRect(Rect.MinMaxRect(5f, 0f, 6f, 1f)));
+            Assert.IsFalse(result.IsWhole);
+            Assert.AreEqual(FoldCoverage.Partial, result.Coverage);
+            Assert.AreEqual(0.5f, TotalArea(result), Eps);
+        }
+
+        [Test]
+        public void CoverageAbove_EdgeFold_AcrossTheRemovedStrip_KeepsWhatIsOverTheSheet()
+        {
+            // South fold of depth 1: the sheet's footprint ends at y = -3.25 (a strip of 2d is gone from that edge).
+            var result = Replay(new Fold(FoldAnchor.EdgeSouth, 1f)).CoverageAbove(FaceFootprint.FromRect(Rect.MinMaxRect(0f, -4f, 1f, -3f)));
+            Assert.AreEqual(FoldCoverage.Partial, result.Coverage);
+            Assert.AreEqual(0.25f, TotalArea(result), Eps);
+            foreach (var part in result.VisibleParts)
+                Assert.GreaterOrEqual(part.Bounds.yMin, -3.25f - Eps);
+        }
+
+        [Test]
+        public void CoverageAbove_OverTheLandedFlap_IsWhole_AndUnmoved()
+        {
+            // The Flap lands under the region; the region stays put, whole, so the authored collider stays live.
+            var result = Replay(new Fold(FoldAnchor.EdgeSouth, 1f)).CoverageAbove(FaceFootprint.FromRect(Rect.MinMaxRect(0f, -3f, 1f, -2.5f)));
+            Assert.IsTrue(result.IsWhole);
+            Assert.AreEqual(FoldCoverage.Uncovered, result.Coverage);
+        }
+
+        [Test]
+        public void CoverageAbove_InTheLiftedCorner_IsNone()
+        {
+            // North-east corner fold of depth 3 lifts x + y >= 6.75; nothing of the sheet is left there.
+            var result = Replay(new Fold(FoldAnchor.CornerNorthEast, 3f)).CoverageAbove(FaceFootprint.FromRect(Rect.MinMaxRect(5f, 3.75f, 5.5f, 4.25f)));
+            Assert.IsTrue(result.IsNone);
+            Assert.AreEqual(FoldCoverage.Covered, result.Coverage);
+        }
+
+        [Test]
+        public void CoverageAbove_CornerFold_RemainderHasTheRightArea()
+        {
+            // Of x in [3, 5.5], y in [3, 4.25], only the triangle with x + y <= 6.75 is still over the sheet.
+            var result = Replay(new Fold(FoldAnchor.CornerNorthEast, 3f)).CoverageAbove(FaceFootprint.FromRect(Rect.MinMaxRect(3f, 3f, 5.5f, 4.25f)));
+            Assert.AreEqual(FoldCoverage.Partial, result.Coverage);
+            Assert.AreEqual(0.28125f, TotalArea(result), 1e-3f);
+        }
+
+        [Test]
+        public void CoverageAbove_TwoFolds_PartsAreDisjointAndSumToTheRemainder()
+        {
+            // South then west, depth 1 each: each fold's lifted strip is gone and its landed strip is still sheet, so
+            // the footprint is x >= -4.5, y >= -3.25 whatever lies on top of what.
+            var result = Replay(new Fold(FoldAnchor.EdgeSouth, 1f), new Fold(FoldAnchor.EdgeWest, 1f))
+                .CoverageAbove(FaceFootprint.FromRect(Rect.MinMaxRect(-5f, -4f, -3f, -3f)));
+            Assert.AreEqual(0.375f, TotalArea(result), 1e-3f);
+            Assert.IsTrue(result.VisibleParts.Count >= 2, "several layers under it: pieced together");
+            var parts = result.VisibleParts;
+            for (int i = 0; i < parts.Count; i++)
+                for (int j = i + 1; j < parts.Count; j++)
+                    Assert.LessOrEqual(parts[i].Intersect(parts[j]).Area, 1e-4f, "parts overlap");
         }
     }
 }

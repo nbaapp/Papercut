@@ -7,8 +7,8 @@ namespace Papercut.Tests
 {
     /// <summary>
     /// The Studio's fold-preview model against the real fold math: replay truth, the editor rule scope
-    /// (allow-everything folds, geometric guards, ghost-only player rule), list-edit refusals, and the
-    /// name-coupled settings reads.
+    /// (any number of folds, stacking as the sheet says, geometric guards, ghost-only player rule), list-edit
+    /// refusals, and the name-coupled settings reads.
     /// </summary>
     public sealed class StudioFoldModelTests
     {
@@ -51,12 +51,13 @@ namespace Papercut.Tests
         // ----- Editor rule scope -----
 
         [Test]
-        public void Evaluate_AllowsOverlappingFolds_TogglesAreIgnored()
+        public void Evaluate_AllowsOverlappingFolds_WithStackingOn()
         {
             var model = Model();
+            Assert.IsTrue(model.AllowStacking, "stacking is on until the window mirrors the sheet's toggle");
             Assert.IsTrue(model.TryCommit(EdgeEast(2f), MinDepth, out _));
-            // A deeper second fold lifts pieces of the first fold's flap: the game would refuse this without
-            // allowStacking (and without allowMultipleFolds at all); the editor allows any combination.
+            // A deeper second fold lifts pieces of the first fold's flap: the game would refuse this with
+            // allowStacking off (mirrored, see below) and without allowMultipleFolds (ignored: any number previews).
             Assert.IsTrue(model.TryCommit(EdgeEast(3f), MinDepth, out var rejection), rejection.ToString());
             Assert.AreEqual(2, model.Folds.Count);
         }
@@ -245,6 +246,148 @@ namespace Papercut.Tests
             return (seam.a + seam.b) * 0.5f;
         }
 
+        // ----- Obstacles (paperweights, as authored) -----
+
+        static readonly Rect WeightRect = new(-0.37f, -0.35f, 0.74f, 0.7f); // The Block footprint, at the centre.
+
+        static (FaceFootprint, SheetFace)[] WeightAtCentre(SheetFace face)
+            => new[] { (FaceFootprint.FromRect(WeightRect), face) };
+
+        [Test]
+        public void Obstacle_ClampsTheDragAndRefusesADeeperFold_LikeFoldObstacles()
+        {
+            var model = Model();
+            model.SetObstacles(WeightAtCentre(SheetFace.Front));
+            Assert.AreEqual(1, model.ObstaclePieces.Count, "the weight is face-up on the flat sheet");
+
+            var expected = FoldObstacles.MaxDepth(FoldAnchor.EdgeEast, SheetLayers.Flat, model.ObstaclePieces);
+            Assert.AreEqual((SheetGeometry.HalfSize.x - WeightRect.xMax) * 0.5f, expected, 1e-3f, "sanity: the flat closed form");
+            Assert.AreEqual(expected, model.MaxDepth(FoldAnchor.EdgeEast), 1e-6f);
+
+            Assert.AreEqual(FoldRejection.None, model.Evaluate(EdgeEast(expected), out _), "at the clamp the fold is legal");
+            Assert.AreEqual(FoldRejection.CoversObstacle, model.Evaluate(EdgeEast(expected + 0.1f), out _), "past it, the safety net");
+            model.SetPreview(EdgeEast(5f));
+            Assert.AreEqual(expected, model.Preview.Value.Depth, 1e-6f, "the preview is held at the clamp");
+            Assert.IsTrue(model.PreviewValid, "and is not red");
+        }
+
+        [Test]
+        public void Obstacle_BelowMinDepth_MakesTheAnchorInert()
+        {
+            var model = Model();
+            model.MinDepth = MinDepth;
+            var nearEdge = new Rect(SheetGeometry.HalfSize.x - 0.4f - 0.74f, -0.35f, 0.74f, 0.7f); // 0.4 in from the east edge: clamp 0.2 < minDepth.
+            model.SetObstacles(new[] { (FaceFootprint.FromRect(nearEdge), SheetFace.Front) });
+            Assert.AreEqual(0f, model.MaxDepth(FoldAnchor.EdgeEast), "a sliver that would drop as TooShallow is not offered");
+            Assert.Greater(model.MaxDepth(FoldAnchor.EdgeWest), 1f, "other anchors are unaffected");
+        }
+
+        [Test]
+        public void Obstacle_OnTheBack_IsInertFlat_AndBindsOnceExposed()
+        {
+            var model = Model();
+            // Authored on the Back at Back-space x in [3, 3.74]: beneath Front-space x in [-3.74, -3] (Bible §6).
+            var backRect = new Rect(3f, -0.35f, 0.74f, 0.7f);
+            model.SetObstacles(new[] { (FaceFootprint.FromRect(backRect), SheetFace.Back) });
+            Assert.AreEqual(0, model.ObstaclePieces.Count, "face-down: not on the same side (Aaron)");
+            Assert.IsTrue(float.IsPositiveInfinity(FoldObstacles.MaxDepth(FoldAnchor.EdgeEast, model.Layers, model.ObstaclePieces)));
+
+            // West fold depth 2.5 (crease x = -3) lifts x in [-5.5, -3] and lands it Back-up on [-3, -0.5]: the
+            // weight's region comes around to its mirror across the crease, x in [-3, -2.26].
+            Assert.IsTrue(model.TryCommit(EdgeWest(2.5f), MinDepth, out var rejection), rejection.ToString());
+            Assert.AreEqual(1, model.ObstaclePieces.Count, "exposed on the landed flap");
+            var bounds = model.ObstaclePieces[0].Bounds;
+            Assert.AreEqual(-3f, bounds.xMin, 1e-3f);
+            Assert.AreEqual(-2.26f, bounds.xMax, 1e-3f);
+
+            // An east fold's flap reaching x = -2.26 would land on it: 2d = 5.5 + 2.26.
+            Assert.AreEqual((SheetGeometry.HalfSize.x + 2.26f) * 0.5f, model.MaxDepth(FoldAnchor.EdgeEast), 1e-3f);
+        }
+
+        [Test]
+        public void Obstacle_GuardsListEdits_WhereItIsAuthored()
+        {
+            var model = Model();
+            model.SetObstacles(WeightAtCentre(SheetFace.Front));
+            Assert.IsTrue(model.TryCommit(EdgeEast(1f), MinDepth, out _));
+
+            Assert.IsFalse(model.TrySetDepth(0, 4f, MinDepth, out var reason), "depth 4 lands on the centre weight");
+            StringAssert.Contains("paperweight", reason);
+            Assert.AreEqual(1f, model.Folds[0].Depth, 1e-6f, "unchanged after the refusal");
+
+            model.Clear();
+            Assert.AreEqual(1, model.ObstaclePieces.Count, "obstacles are authored content: Clear keeps them");
+        }
+
+        [Test]
+        public void SetObstacles_SameAgain_IsANoOp()
+        {
+            var model = Model();
+            var changes = 0;
+            model.Changed += () => changes++;
+            model.SetObstacles(WeightAtCentre(SheetFace.Front));
+            Assert.AreEqual(1, changes);
+            model.SetObstacles(WeightAtCentre(SheetFace.Front));
+            Assert.AreEqual(1, changes, "an unchanged hand-off does not re-render");
+            model.SetObstacles(System.Array.Empty<(FaceFootprint, SheetFace)>());
+            Assert.AreEqual(2, changes);
+            Assert.AreEqual(0, model.ObstaclePieces.Count);
+        }
+
+        // ----- Stacking off (Aaron, 2026-09-16: the drag stops against another Flap, as at a paperweight) -----
+
+        [Test]
+        public void StackingOff_HoldsTheDragShortOfTheOtherFlap_AndCommitsThere()
+        {
+            var model = Model();
+            model.AllowStacking = false;
+            Assert.IsTrue(model.TryCommit(EdgeWest(2f), MinDepth, out _));
+
+            // The west Flap lies on x in [-3.5, -1.5]; an east Flap's far edge is at 5.5 - 2d: it meets the west Flap at d = 3.5.
+            var clamp = model.MaxDepth(FoldAnchor.EdgeEast);
+            Assert.AreEqual(3.5f - FoldObstacles.ContactTolerance, clamp, 1e-3f);
+
+            model.SetPreview(EdgeEast(5f));
+            Assert.AreEqual(clamp, model.Preview.Value.Depth, 1e-6f, "the preview holds at the clamp, not at the cursor");
+            Assert.IsTrue(model.PreviewValid, "held short of the other Flap: not red");
+
+            Assert.IsTrue(model.TryCommit(EdgeEast(clamp), MinDepth, out var rejection), rejection.ToString());
+            Assert.AreEqual(2, model.Folds.Count);
+            Assert.IsTrue(FoldValidity.Independent(model.Effects[0], model.Effects[1]), "side by side, not stacked");
+        }
+
+        [Test]
+        public void StackingOff_RefusesAnOverlap_AsTheSafetyNet()
+        {
+            var model = Model();
+            model.AllowStacking = false;
+            Assert.IsTrue(model.TryCommit(EdgeWest(2f), MinDepth, out _));
+
+            Assert.AreEqual(FoldRejection.OverlapsFold, model.Evaluate(EdgeEast(4f), out _));
+            Assert.IsFalse(model.TryCommit(EdgeEast(4f), MinDepth, out var rejection));
+            Assert.AreEqual(FoldRejection.OverlapsFold, rejection);
+            Assert.AreEqual(1, model.Folds.Count);
+        }
+
+        [Test]
+        public void StackingOff_GuardsListEdits()
+        {
+            var model = Model();
+            model.AllowStacking = false;
+            Assert.IsTrue(model.TryCommit(EdgeWest(2f), MinDepth, out _));
+            Assert.IsTrue(model.TryCommit(EdgeEast(3f), MinDepth, out var r2), r2.ToString());
+
+            // West at depth 3 would lie on x in [-2.5, 0.5]; the east Flap lies on x in [-0.5, 2.5]. The trial replays
+            // in order, so it is fold 2 (east) that is found overlapping fold 1 (west) at the new depth.
+            Assert.IsFalse(model.TrySetDepth(0, 3f, MinDepth, out var reason), "deepening the west fold runs it into the east Flap");
+            StringAssert.Contains("Fold 2 would overlap fold 1", reason);
+            StringAssert.Contains("if fold 1 were 3 deep", reason);
+            Assert.AreEqual(2f, model.Folds[0].Depth, 1e-6f, "unchanged after the refusal");
+
+            model.AllowStacking = true;
+            Assert.IsTrue(model.TrySetDepth(0, 3f, MinDepth, out var stackedReason), stackedReason);
+        }
+
         // ----- Name-coupled settings reads (a rename must fail here, not silently degrade) -----
 
         [Test]
@@ -256,13 +399,13 @@ namespace Papercut.Tests
             var folds = new SerializedObject(sheetPrefab.GetComponent<SheetFolds>());
             Assert.IsNotNull(folds.FindProperty(StudioFoldSettings.MinDepthField), StudioFoldSettings.MinDepthField);
             Assert.IsNotNull(folds.FindProperty(StudioFoldSettings.RememberCreasesField), StudioFoldSettings.RememberCreasesField);
+            Assert.IsNotNull(folds.FindProperty(StudioFoldSettings.AllowStackingField), StudioFoldSettings.AllowStackingField);
 
             var renderer = new SerializedObject(sheetPrefab.GetComponent<RenderTextureFoldRenderer>());
             foreach (var name in new[]
                      {
                          StudioFoldSettings.PreviewTintField, StudioFoldSettings.InvalidTintField,
-                         StudioFoldSettings.CreaseColorField, StudioFoldSettings.RememberedCreaseColorField,
-                         StudioFoldSettings.CreaseWidthField, StudioFoldSettings.SeamWidthField,
+                         StudioFoldSettings.SeamWidthField,
                          StudioFoldSettings.SeamColorField, StudioFoldSettings.PixelsPerUnitField,
                          StudioFoldSettings.FaceMaterialField,
                      })
@@ -279,6 +422,56 @@ namespace Papercut.Tests
                          StudioFoldSettings.DepthSnapField,
                      })
                 Assert.IsNotNull(typeof(FoldDragInput).GetField(name, flags), name);
+        }
+
+        // ----- A Flap may not carry a block under a universal wall (Aaron, 2026-09-28) -----
+
+        /// <summary>A Back-side block near the south edge, which a south fold of depth 1 turns face-up onto y in [-2.8, -2.3] - where the wall is.</summary>
+        static readonly Rect BlockNearSouthEdge = new(-0.25f, -4.2f, 0.5f, 0.5f);
+        static readonly ConvexPolygon[] WallAtLanding = { ConvexPolygon.FromRect(new Rect(-1f, -3f, 2f, 1f)) };
+
+        [Test]
+        public void BlockUnderWall_RefusesTheCarryingFold_LikeTheGame()
+        {
+            var model = Model();
+            model.SetBlocks(new[] { (BlockNearSouthEdge, SheetFace.Back) });
+            model.SetBlockWalls(WallAtLanding);
+
+            model.SetPreview(new Fold(FoldAnchor.EdgeSouth, 1f));
+            Assert.IsFalse(model.PreviewValid, "red, like a fold over the player");
+            Assert.IsFalse(model.TryCommit(new Fold(FoldAnchor.EdgeSouth, 1f), MinDepth, out var rejection));
+            Assert.AreEqual(FoldRejection.CarriesBlockUnderWall, rejection);
+            Assert.AreEqual(0, model.Folds.Count);
+
+            model.SetBlockWalls(System.Array.Empty<ConvexPolygon>());
+            Assert.IsTrue(model.TryCommit(new Fold(FoldAnchor.EdgeSouth, 1f), MinDepth, out _), "without the wall the same fold commits");
+        }
+
+        [Test]
+        public void BlockUnderWall_GuardsListEdits()
+        {
+            var model = Model();
+            model.SetBlocks(new[] { (BlockNearSouthEdge, SheetFace.Back) });
+            model.SetBlockWalls(WallAtLanding);
+            Assert.IsTrue(model.TryCommit(new Fold(FoldAnchor.EdgeSouth, 0.5f), MinDepth, out _), "shallow: the block lands short of the wall");
+
+            Assert.IsFalse(model.TrySetDepth(0, 1f, MinDepth, out var reason));
+            StringAssert.Contains("carry a block under a universal wall", reason);
+            Assert.AreEqual(0.5f, model.Folds[0].Depth, 1e-5f, "unchanged");
+        }
+
+        [Test]
+        public void SetBlocksAndWalls_SameAgain_AreNoOps()
+        {
+            var model = Model();
+            var changes = 0;
+            model.Changed += () => changes++;
+            model.SetBlocks(new[] { (BlockNearSouthEdge, SheetFace.Back) });
+            model.SetBlockWalls(WallAtLanding);
+            Assert.AreEqual(2, changes);
+            model.SetBlocks(new[] { (BlockNearSouthEdge, SheetFace.Back) });
+            model.SetBlockWalls(WallAtLanding);
+            Assert.AreEqual(2, changes, "unchanged hand-offs change nothing");
         }
     }
 }

@@ -36,6 +36,7 @@ Transform:
   m_Children:
   - {fileID: 2001}
   - {fileID: 3001}
+  - {fileID: 1540457634182689448}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &1002
@@ -53,6 +54,8 @@ MonoBehaviour:
   gridPosition: {x: 0, y: 0}
   front: {fileID: 2001}
   back: {fileID: 3001}
+  above: {fileID: 1540457634182689448}
+  showCollision: 1
 --- !u!114 &1003
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -132,15 +135,34 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f01d0011a1b2c3d4e5f60718293a4b11, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  faceMaterial: {fileID: 2100000, guid: f01d0020a1b2c3d4e5f60718293a4b20, type: 2}
-  creaseMaterial: {fileID: 2100000, guid: f01d0021a1b2c3d4e5f60718293a4b21, type: 2}
+  faceMaterial: {fileID: 2100000, guid: 5e59facd587a494ab645d7300eacb8a9, type: 2}
+  shadingMaterial: {fileID: 2100000, guid: 904df3d83438a214eaf2baa5a74b0e9c, type: 2}
+  seamMaterial: {fileID: 2100000, guid: f01d0021a1b2c3d4e5f60718293a4b21, type: 2}
   pixelsPerUnit: 128
+  frontGrain: {fileID: 2800000, guid: 564bfd7e461df36458bb647239a309ce, type: 3}
+  backGrain: {fileID: 2800000, guid: 564bfd7e461df36458bb647239a309ce, type: 3}
+  grainLight: {x: -0.5, y: 0.6, z: 1}
+  grainStrength: 1.75
+  grainAmbient: 0.6
   previewTint: {r: 1, g: 1, b: 1, a: 0.85}
   invalidTint: {r: 1, g: 0.35, b: 0.35, a: 0.85}
   retreatingTint: {r: 1, g: 1, b: 1, a: 1}
-  creaseWidth: 0.06
-  creaseColor: {r: 0.25, g: 0.2, b: 0.15, a: 0.9}
-  rememberedCreaseColor: {r: 0.25, g: 0.2, b: 0.15, a: 0.35}
+  creaseInsideMap: {fileID: 2800000, guid: 0ca163daeba173f41875265e44064091, type: 3}
+  creaseOutsideMap: {fileID: 2800000, guid: 776e5c6ec6e69a44f983b0a95d7c19b3, type: 3}
+  creaseInsideLine: 0.509
+  creaseOutsideLine: 0.5045
+  flipCreaseInside: 0
+  flipCreaseOutside: 0
+  creaseMapWidth: 11
+  creaseHalfWidth: 0.5
+  creaseFadeStart: 0.5
+  creaseStrength: 0
+  rememberedCreaseStrength: 1
+  creaseInsidePinch: 0
+  creaseOutsidePinch: 0
+  rememberedCreasePinch: 0.371
+  grainWarp: 0.15
+  grainWarpBlur: 4
   seamWidth: 0.04
   seamColor: {r: 0.15, g: 0.12, b: 0.1, a: 0.5019608}
 --- !u!1 &2000
@@ -387,3 +409,34 @@ MeshRenderer:
   m_SortingOrder: 0
   m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
+--- !u!1 &4905713628736329416
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1540457634182689448}
+  m_Layer: 0
+  m_Name: Above
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1540457634182689448
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4905713628736329416}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0.3}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1001}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}

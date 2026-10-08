@@ -95,6 +95,6 @@ def check(path):
                     print(f"  {os.path.relpath(path, ROOT)}: sprite {fid} not pinned in {os.path.relpath(tgt, ROOT)}.meta"); ERR.append(1)
     print(f"{os.path.relpath(path, ROOT)}: {len(local)} objects, {n_local} local refs, {n_ext} external refs")
 
-for p in sorted(glob.glob("Assets/Papercut/Prefabs/**/*.prefab", recursive=True)) + sorted(glob.glob("Assets/Papercut/Sheets/*.prefab")) + sorted(glob.glob("Assets/Scenes/*.unity")):
+for p in sorted(glob.glob("Assets/Papercut/Prefabs/**/*.prefab", recursive=True)) + sorted(glob.glob("Assets/Papercut/Sheets/**/*.prefab", recursive=True)) + sorted(glob.glob("Assets/Scenes/*.unity")):
     check(os.path.join(ROOT, p))
 print("FAIL" if ERR else "ALL LINKS OK"); sys.exit(1 if ERR else 0)
